@@ -1,0 +1,16 @@
+{
+    "server_ip": "127.0.0.1",
+    "client_ip": "",
+    "server_port": 62201,
+    "access_port": 22,
+    "resource_ip" : "resource_ip",
+    "protocol": "tcp",
+    "encryption_key": "your-encryption-key-here",
+    "hmac_key": "your-hmac-key-here",
+    "keepalive_interval": 240,
+    "verbose": false,
+    "test_mode": false,
+    "max_retries": 3,
+    "retry_delay": 5
+} 
+

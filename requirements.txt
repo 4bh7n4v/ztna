@@ -1,0 +1,14 @@
+cryptography>=3.4.8
+argparse
+pprint
+hmac
+hashlib
+base64
+threading
+socket
+json
+time
+os
+logging
+signal
+ipaddress 
