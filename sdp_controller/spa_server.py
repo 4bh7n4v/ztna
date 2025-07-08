@@ -20,23 +20,29 @@ import ipaddress
 
 class SPAServer:
     def __init__(self, config_file='server_config.json', verbose=False, port=62201, daemon=False):
-        self.verbose = verbose
-        self.port = port
-        self.daemon = daemon
+        # Load configuration first
         self.load_config(config_file)
+        
+        # Apply config defaults first, then command line overrides
+        self.verbose = self.config.get('verbose', False)
+        self.port = self.config.get('listen_port', 62201)
+        self.daemon = self.config.get('daemon', False)
+        
+        # Command line arguments override config file settings
+        if verbose:
+            self.verbose = verbose
+        if port != 62201:  # Only override if non-default port specified
+            self.port = port
+        if daemon:
+            self.daemon = daemon
+        
+        # Initialize other components
         self.setup_logging()
         self.setup_crypto()
         self.socket = None
         self.running = True
         # Track received SPA packets
         self.spa_requests = {}
-        # Override the values from config if specified
-        if 'verbose' in self.config:
-            self.verbose = self.config['verbose']
-        if 'listen_port' in self.config:
-            self.port = self.config['listen_port']
-        if 'daemon' in self.config:
-            self.daemon = self.config['daemon']
 
     def load_config(self, config_file):
         try:
@@ -45,19 +51,23 @@ class SPAServer:
         except FileNotFoundError:
             print(f"Error: Configuration file {config_file} not found")
             sys.exit(1)
+        except json.JSONDecodeError as e:
+            print(f"Error: Invalid JSON in configuration file {config_file}: {e}")
+            sys.exit(1)
 
     def setup_logging(self):
         log_format = '%(asctime)s - %(levelname)s - %(message)s'
-        log_level = logging.INFO
+        log_level = logging.DEBUG if self.verbose else logging.INFO
         handlers = []
 
-        # Add file handler
-        try:
-            file_handler = logging.FileHandler(self.config['log_file'])
-            file_handler.setFormatter(logging.Formatter(log_format))
-            handlers.append(file_handler)
-        except Exception as e:
-            print(f"Failed to set up file logger: {e}")
+        # Add file handler if specified in config
+        if 'log_file' in self.config:
+            try:
+                file_handler = logging.FileHandler(self.config['log_file'])
+                file_handler.setFormatter(logging.Formatter(log_format))
+                handlers.append(file_handler)
+            except Exception as e:
+                print(f"Failed to set up file logger: {e}")
 
         # Add console handler if not daemon, or if verbose
         if self.verbose or not self.daemon:
@@ -65,19 +75,24 @@ class SPAServer:
             console_handler.setFormatter(logging.Formatter(log_format))
             handlers.append(console_handler)
 
-        # Configure root logger manually
-        logging.getLogger().handlers = []  # Clear existing handlers
-        logging.getLogger().setLevel(log_level)
+        # Configure root logger
+        root_logger = logging.getLogger()
+        root_logger.handlers = []  # Clear existing handlers
+        root_logger.setLevel(log_level)
         for handler in handlers:
-            logging.getLogger().addHandler(handler)
+            root_logger.addHandler(handler)
     
-    def setup_crypto(self, password=None):
+    def setup_crypto(self):
         # Derive AES key from encryption key
-        password = self.config['encryption_key'] # get the password from config file
+        if 'encryption_key' not in self.config:
+            print("Error: encryption_key not found in configuration")
+            sys.exit(1)
+            
+        password = self.config['encryption_key']
         kdf = PBKDF2HMAC(
             algorithm=hashes.SHA256(),
-            length=64,  # first32 bytes for AES and next 32 for HMAC
-            salt=b'ztna_salt', # Fixed salt for consistency
+            length=64,  # first 32 bytes for AES and next 32 for HMAC
+            salt=b'ztna_salt',  # Fixed salt for consistency
             iterations=100000,
             backend=default_backend()
         )
@@ -90,6 +105,9 @@ class SPAServer:
         return hmac.compare_digest(h.digest(), received_hmac)
     
     def decrypt_packet(self, encrypted_data):
+        if len(encrypted_data) < 48:  # Minimum: 16 (IV) + 32 (HMAC) = 48 bytes
+            raise ValueError("Packet too short")
+            
         # Extract IV from the beginning of the packet
         iv = encrypted_data[:16]
         encrypted = encrypted_data[16:]
@@ -114,7 +132,11 @@ class SPAServer:
         return json_data, received_hmac
     
     def is_ip_allowed(self, ip):
-        allowed_list =  self.config['allowed_ips']
+        if 'allowed_ips' not in self.config:
+            logging.warning("No allowed_ips configured - denying all access")
+            return False
+            
+        allowed_list = self.config['allowed_ips']
         try:
             ip_obj = ipaddress.ip_address(ip)
             for net in allowed_list:
@@ -140,6 +162,7 @@ class SPAServer:
             # Verify HMAC
             if not self.verify_hmac(decrypted, received_hmac):
                 logging.warning(f"Invalid HMAC from {addr[0]}")
+                self.reply(addr, False)
                 return
             
             # Parse the packet
@@ -150,65 +173,87 @@ class SPAServer:
                 pprint.pprint(packet_data)
             
             # Check if source IP is allowed
-            if not self.is_ip_allowed(packet_data.get('source_ip')):
-                logging.warning(f"Unauthorized IP {packet_data.get('source_ip')}")
+            source_ip = packet_data.get('source_ip')
+            if not source_ip:
+                logging.warning(f"No source_ip in packet from {addr[0]}")
+                self.reply(addr, False)
+                return
+                
+            if not self.is_ip_allowed(source_ip):
+                logging.warning(f"Unauthorized IP {source_ip}")
                 self.reply(addr, False)
                 return
             
             # Check if protocol is allowed
             if 'allowed_protocols' in self.config:
-                if packet_data.get('protocol') not in self.config['allowed_protocols']:
-                    logging.warning(f"Unauthorized protocol {packet_data.get('protocol')}")
+                protocol = packet_data.get('protocol')
+                if protocol not in self.config['allowed_protocols']:
+                    logging.warning(f"Unauthorized protocol {protocol}")
                     self.reply(addr, False)
                     return
             
             # Log the access request
-            key = f"{addr[0]}:{packet_data.get('port', '')}:{packet_data.get('protocol', '')}" # example key = "192.168.1.5:22:tcp"
+            key = f"{addr[0]}:{packet_data.get('port', '')}:{packet_data.get('protocol', '')}"
             self.spa_requests[key] = {
                 'timestamp': time.time(),
                 'data': packet_data
             }
-            self.reply(addr,True)
+            self.reply(addr, True)
             logging.info(f"Authorized SPA request: {key}")
             
+        except json.JSONDecodeError as e:
+            logging.error(f"Invalid JSON in packet from {addr[0]}: {e}")
+            self.reply(addr, False)
         except Exception as e:
-            logging.error(f"Error processing packet: {str(e)}")
+            logging.error(f"Error processing packet from {addr[0]}: {str(e)}")
             self.reply(addr, False)
             if self.verbose:
                 import traceback
                 traceback.print_exc()
 
-    def recieve_key(self,addr):
+    def receive_key(self, addr):
         try:
             self.socket.settimeout(10)  # Wait max 10s for the key
             data, sender = self.socket.recvfrom(4096)
+            
+            # Verify the sender is the same as the original requester
+            if sender[0] != addr[0]:
+                logging.warning(f"Key received from different IP: expected {addr[0]}, got {sender[0]}")
+                return
+                
             try:
                 key = data.decode().strip()
             except UnicodeDecodeError:
+                logging.warning(f"Invalid key encoding received from {addr[0]}")
                 return
+                
             if key:
-                logging.info(f"WireGuard public key received from {addr}: {key}")
+                logging.info(f"WireGuard public key received from {addr[0]}: {key}")
             else:
-                logging.warning(f"Invalid key format received from {addr}")
+                logging.warning(f"Empty key received from {addr[0]}")
 
         except socket.timeout:
-            logging.warning(f"No key received from {addr} within timeout")
-
+            logging.warning(f"No key received from {addr[0]} within timeout")
         except Exception as e:
-            logging.error(f"Error receiving key from {addr}: {str(e)}")
+            logging.error(f"Error receiving key from {addr[0]}: {str(e)}")
+        finally:
+            self.socket.settimeout(None)  # Reset timeout
 
-    def reply(self,addr,result):
-        if result:
-            self.socket.sendto('SPA Verification successfull'.encode(),addr)
-            self.recieve_key(addr)
-        else:
-            self.socket.sendto('SPA Verification Failed'.encode(),addr)
+    def reply(self, addr, result):
+        try:
+            if result:
+                self.socket.sendto('SPA Verification successful'.encode(), addr)
+                self.receive_key(addr)
+            else:
+                self.socket.sendto('SPA Verification Failed'.encode(), addr)
+        except Exception as e:
+            logging.error(f"Error sending reply to {addr[0]}: {str(e)}")
         
-        # pass
     def start(self):
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.socket.bind(('0.0.0.0', self.port)) # Change to the interface if needed
+            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.socket.bind(('0.0.0.0', self.port))
             logging.info(f"Server started on port {self.port}")
             logging.info(f"Listening on all interfaces (0.0.0.0)")
             
@@ -226,23 +271,35 @@ class SPAServer:
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    logging.error(f"Error processing packet: {str(e)}")
+                    if self.running:  # Only log if we're still supposed to be running
+                        logging.error(f"Error processing packet: {str(e)}")
                     continue
+                    
         except KeyboardInterrupt:
-            logging.info("Server shutting down")
+            logging.info("Received KeyboardInterrupt, shutting down...")
+        except Exception as e:
+            logging.error(f"Server error: {str(e)}")
         finally:
             self.cleanup()
 
     def signal_handler(self, signum, frame):
+        if not self.running:  # Prevent multiple shutdown attempts
+            return
         logging.info(f"Received signal {signum}, shutting down...")
         self.running = False
-        self.cleanup()
-        sys.exit(0)
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
 
     def cleanup(self):
         if self.socket:
-            self.socket.close()
-        sys.exit(0)
+            try:
+                self.socket.close()
+            except:
+                pass
+        logging.info("Server shutdown complete")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -304,4 +361,4 @@ def main():
         server.cleanup()
 
 if __name__ == "__main__":
-    main() 
+    main()
