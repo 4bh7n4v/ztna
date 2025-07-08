@@ -18,27 +18,30 @@ import wireguard
 
 
 class SPAClient:
-    def __init__(self,config_file = "client_config.json", access_port=None, server_port=62201, 
-                 protocol='tcp', source_ip=None, keepalive_interval=240,
-                 verbose=False):
+    def __init__(self, config_file='client_config.json', verbose=False, access_port=None, 
+             server_port=62201, protocol='tcp', source_ip=None, keepalive_interval=240):
+        # Initialize verbose first so it can be used in load_config
         self.verbose = verbose
+        
+        # Load configuration
         self.load_config(config_file)
+        
+        # Apply config defaults first, then command line overrides
+        if not verbose:  # Only use config verbose if command line wasn't specified
+            self.verbose = self.config.get('verbose', False)
+        self.keepalive_interval = self.config.get('keepalive_interval', 240)
+        
+        # Command line arguments override config file settings
         if access_port:
             self.config['access_port'] = access_port
         if source_ip:
             self.config['source_ip'] = source_ip
-        if server_port:
+        if server_port != 62201:  # Only override if non-default port specified
             self.config['server_port'] = server_port
-        if protocol:
+        if protocol != 'tcp':  # Only override if non-default protocol specified
             self.config['protocol'] = protocol
-        if keepalive_interval:
-            self.config['keepalive_interval'] = keepalive_interval
-        
-        # Override settings from config if specified
-        if 'verbose' in self.config:
-            self.verbose = self.config['verbose']
-        if 'keepalive_interval' in self.config:
-            self.keepalive_interval = self.config['keepalive_interval']
+        if keepalive_interval != 240:  # Only override if non-default interval specified
+            self.keepalive_interval = keepalive_interval
         
         self.setup_crypto(self.password)
         self.keepalive_timer = None
@@ -181,18 +184,22 @@ class SPAClient:
             if not is_keepalive:
                 sock.settimeout(5)
                 try:
-                        response, addr = sock.recvfrom(1024)
-
-                        
-                        if response:
-                            print(response.decode())
-                            self.send_wireguard_key(sock)
-                                
+                    response, addr = sock.recvfrom(1024)
+                    
+                    if response:
+                        print(response.decode())
+                        self.send_wireguard_key(sock)
+                        return True  # Success
+                            
                 except socket.timeout:
                     print("No response received from server")
+                    return False  # Failed
+            
+            return True  # For keepalive packets, assume success
 
         except Exception as e:
             print(f"Error sending packet: {str(e)}")
+            return False  # Failed
         finally:
             sock.close()
 
@@ -252,15 +259,20 @@ def main():
                       server_port=args.port, protocol=args.protocol,
                       source_ip=args.source_ip, keepalive_interval=args.keepalive,
                       verbose=args.verbose)
-    client.send_packet()  # Send initial packet
-    client.start_keepalive()  # Start keepalive mechanism
-    try:
-        # Keep the script running
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        client.stop_keepalive()
-        print("\nClient shutting down")
+    
+    # Send initial packet and check if successful
+    if client.send_packet():
+        client.start_keepalive()  # Only start keepalive if initial packet was successful
+        try:
+            # Keep the script running
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            client.stop_keepalive()
+            print("\nClient shutting down")
+    else:
+        print("Failed to connect to server. Exiting.")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
