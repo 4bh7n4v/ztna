@@ -1,0 +1,30 @@
+[
+  {
+    "gateway_id": "gw-01",
+    "name": "sdp Gateway 1",
+    "ssh_user": "ajay",
+    "ssh_host": "127.0.0.1",
+    "ssh_port": 22,
+    "ssh_key_path": "/home/ajay/ssh_keys/gw-01.key",
+    "wireguard_interface": "wg0",
+    "wireguard_public_key": "VLmkZ00wWPjLXwrYWBBdlhqC9pk4JxgdwK3kpYyluhg=",
+    "listen_port": 51820,
+    "vpn_subnet": "10.0.0.0/24",
+    "vpn_ip_pool": ["10.0.0.1","10.0.0.2", "10.0.0.3", "10.0.0.4"],
+    "status": "online"
+  },
+  {
+    "gateway_id": "gw-02",
+    "name": "sdp Gateway 2",
+    "ssh_user": "test_user",
+    "ssh_host": "some_ip",
+    "ssh_port": 22,
+    "ssh_key_path": "path to ssh .key file ",
+    "wireguard_interface": "wg0",
+    "wireguard_public_key": "wireguard public key",
+    "listen_port": 51820,
+    "vpn_subnet": "10.1.0.0/24",
+    "vpn_ip_pool": ["10.1.0.2", "10.1.0.3", "10.1.0.4"],
+    "status": "online"
+  }
+]
