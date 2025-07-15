@@ -86,13 +86,7 @@ chmod +x Install_Dep.sh
 ./Intall_Dep.sh
 ```
 
-4. Configure WireGuard:
-```bash
-# Generate WireGuard keys
-wg genkey | tee privatekey | wg pubkey > publickey
-```
-
-5. Configure client and server:
+3. Configure client and server:
    - Edit `sdp_client/client_config.json`
    - Edit `sdp_controller/server_config.json`
 
