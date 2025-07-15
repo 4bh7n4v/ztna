@@ -23,13 +23,13 @@ This project implements a Zero Trust Network Access solution that combines Singl
 ## Architecture
 
 ```
-┌─────────────┐    SPA Packet    ┌─────────────┐    WireGuard    ┌─────────────┐
-│ SDP Client  │ ────────────────► │ SDP Controller │ ──────────────► │ SDP Gateway  │
-│             │                   │             │                   │             │
-│ - Auth      │                   │ - Access    │                   │ - Network   │
-│ - Encryption│                   │ - Control   │                   │ - Routing   │
-│ - WireGuard │                   │ - Logging   │                   │ - Security  │
-└─────────────┘                   └─────────────┘                   └─────────────┘
+┌─────────────┐    SPA Packet     ┌────────────────┐    WireGuard      ┌──────────────┐
+│ SDP Client  │ ────────────────► │ SDP Controller │ ──────────────►   │ SDP Gateway  │
+│             │                   │                │                   │              │
+│ - Auth      │                   │ - Access       │                   │ - Network    │
+│ - Encryption│                   │ - Control      │                   │ - Routing    │
+│ - WireGuard │                   │ - Logging      │                   │ - Security   │
+└─────────────┘                   └────────────────┘                   └──────────────┘
 ```
 
 ## Components
@@ -80,18 +80,19 @@ git clone <repository-url>
 cd ztna
 ```
 
-2. Install dependencies:
+2. System Requirements & dependencies
 ```bash
-pip install -r requirements.txt
+chmod +x Install_Dep.sh
+./Intall_Dep.sh
 ```
 
-3. Configure WireGuard:
+4. Configure WireGuard:
 ```bash
 # Generate WireGuard keys
 wg genkey | tee privatekey | wg pubkey > publickey
 ```
 
-4. Configure client and server:
+5. Configure client and server:
    - Edit `sdp_client/client_config.json`
    - Edit `sdp_controller/server_config.json`
 
