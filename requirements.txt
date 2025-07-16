@@ -1,14 +1,5 @@
+cffi>=1.14
 cryptography>=3.4.8
+wireguard-tools>=0.5.2
 argparse
-pprint
-hmac
-hashlib
-base64
-threading
-socket
-json
-time
-os
-logging
-signal
 ipaddress 
