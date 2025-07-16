@@ -82,8 +82,8 @@ cd ztna
 
 2. System Requirements & dependencies
 ```bash
-chmod +x Install_Dep.sh
-./Intall_Dep.sh
+chmod +x Installation.sh
+./Intallation.sh
 ```
 
 3. Configure client and server:
