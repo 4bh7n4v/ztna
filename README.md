@@ -193,22 +193,13 @@ ztna/
 ├── sdp_client/
 │   ├── spa_client.py
 │   ├── client_config.json
-│   ├── wireguard.py
-│   └── __pycache__/
+│   └──  wireguard.py
 ├── sdp_controller/
 │   ├── spa_server.py
 │   ├── server_config.json
 │   └── spa_server.log
 ├── sdp_gateway/
-├── test.py
 └── README.md
-```
-
-### Testing
-
-Run the basic connectivity test:
-```bash
-python test.py
 ```
 
 ### Contributing
