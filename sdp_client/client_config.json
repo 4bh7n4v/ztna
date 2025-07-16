@@ -3,7 +3,7 @@
     "client_ip": "",
     "server_port": 62201,
     "access_port": 22,
-    "resource_ip" : "resource_ip",
+    "resource_ip" : "resource-1",
     "protocol": "tcp",
     "encryption_key": "your-encryption-key-here",
     "hmac_key": "your-hmac-key-here",

@@ -17,6 +17,7 @@ import argparse
 import pprint
 import os
 import ipaddress
+import add_wg_peer
 
 class SPAServer:
     def __init__(self, config_file='server_config.json', verbose=False, port=62201, daemon=False):
@@ -146,6 +147,27 @@ class SPAServer:
         except ValueError:
             return False
     
+    def is_keepalive_packet(self, packet_data):
+        """
+        Determine if this is a keepalive packet based on content or timing
+        You can customize this logic based on your specific requirements
+        """
+        # Check if this is a repeat request from the same source within a short time
+        source_ip = packet_data.get('source_ip')
+        access_port = packet_data.get('access_port')
+        protocol = packet_data.get('protocol')
+        
+        key = f"{source_ip}:{access_port}:{protocol}"
+        current_time = time.time()
+        
+        if key in self.spa_requests:
+            last_request_time = self.spa_requests[key]['timestamp']
+            # If same request within 300 seconds, consider it a keepalive
+            if current_time - last_request_time < 300:
+                return True
+        
+        return False
+    
     def handle_packet(self, data, addr):
         try:
             if self.verbose:
@@ -162,7 +184,7 @@ class SPAServer:
             # Verify HMAC
             if not self.verify_hmac(decrypted, received_hmac):
                 logging.warning(f"Invalid HMAC from {addr[0]}")
-                self.reply(addr, False)
+                self.reply(addr, False, is_keepalive=False)
                 return
             
             # Parse the packet
@@ -176,12 +198,12 @@ class SPAServer:
             source_ip = packet_data.get('source_ip')
             if not source_ip:
                 logging.warning(f"No source_ip in packet from {addr[0]}")
-                self.reply(addr, False)
+                self.reply(addr, False, is_keepalive=False)
                 return
                 
             if not self.is_ip_allowed(source_ip):
                 logging.warning(f"Unauthorized IP {source_ip}")
-                self.reply(addr, False)
+                self.reply(addr, False, is_keepalive=False)
                 return
             
             # Check if protocol is allowed
@@ -189,29 +211,41 @@ class SPAServer:
                 protocol = packet_data.get('protocol')
                 if protocol not in self.config['allowed_protocols']:
                     logging.warning(f"Unauthorized protocol {protocol}")
-                    self.reply(addr, False)
+                    self.reply(addr, False, is_keepalive=False)
                     return
             
+            # Determine if this is a keepalive packet
+            is_keepalive = self.is_keepalive_packet(packet_data)
+            
             # Log the access request
-            key = f"{addr[0]}:{packet_data.get('port', '')}:{packet_data.get('protocol', '')}"
+            key = f"{source_ip}:{packet_data.get('access_port', '')}:{packet_data.get('protocol', '')}"
             self.spa_requests[key] = {
                 'timestamp': time.time(),
                 'data': packet_data
             }
-            self.reply(addr, True)
-            logging.info(f"Authorized SPA request: {key}")
+            
+            if is_keepalive:
+                if self.verbose:
+                    logging.info(f"Keepalive packet received from {source_ip}")
+                # For keepalive packets, just send success response without expecting WireGuard key
+                self.reply(addr, True, is_keepalive=True)
+            else:
+                logging.info(f"Authorized SPA request: {key}")
+                # For initial packets, send success response and expect WireGuard key
+                # Pass the packet_data to reply so it can be forwarded to receive_key
+                self.reply(addr, True, is_keepalive=False, packet_data=packet_data)
             
         except json.JSONDecodeError as e:
             logging.error(f"Invalid JSON in packet from {addr[0]}: {e}")
-            self.reply(addr, False)
+            self.reply(addr, False, is_keepalive=False)
         except Exception as e:
             logging.error(f"Error processing packet from {addr[0]}: {str(e)}")
-            self.reply(addr, False)
+            self.reply(addr, False, is_keepalive=False)
             if self.verbose:
                 import traceback
                 traceback.print_exc()
 
-    def receive_key(self, addr):
+    def receive_key(self, addr, packet_data):
         try:
             self.socket.settimeout(10)  # Wait max 10s for the key
             data, sender = self.socket.recvfrom(4096)
@@ -228,22 +262,70 @@ class SPAServer:
                 return
                 
             if key:
+                # Extract resource IP from the SPA packet data
+                resource_ip = packet_data.get('resource_ip')
+                gateways = add_wg_peer.load_gateways() # pass in the JSON file if you are using some other name other than sdp_gateway_details.json
+                gateway = add_wg_peer.resolve_gateway(resource_ip, gateways)
+                vpn_ip = gateway["vpn_ip_pool"][0]
                 logging.info(f"WireGuard public key received from {addr[0]}: {key}")
+                
+                # Add peer to WireGuard
+                add_wg_peer.add_peer(vpn_ip, key, resource_ip, gateway)
+                
+                # Prepare gateway details to send to client
+                gateway_details = {
+                    'gateway_public_key': gateway['wireguard_public_key'],
+                    'gateway_endpoint': f"{gateway['ssh_host']}:{gateway['listen_port']}",
+                    'client_vpn_ip': vpn_ip,
+                    'vpn_subnet': gateway['vpn_subnet'],
+                    'gateway_vpn_ip': gateway['vpn_ip_pool'][0] if gateway['vpn_ip_pool'] else None,
+                    'status': 'success'
+                }
+                
+                # Send gateway details as JSON response
+                response = json.dumps(gateway_details).encode()
+                self.socket.sendto(response, addr)
+                
+                logging.info(f"Gateway details sent to {addr[0]}: {gateway_details}")
+                
             else:
                 logging.warning(f"Empty key received from {addr[0]}")
+                # Send error response
+                error_response = json.dumps({'status': 'error', 'message': 'Empty key received'}).encode()
+                self.socket.sendto(error_response, addr)
 
         except socket.timeout:
             logging.warning(f"No key received from {addr[0]} within timeout")
+            # Send timeout response
+            timeout_response = json.dumps({'status': 'error', 'message': 'Key timeout'}).encode()
+            try:
+                self.socket.sendto(timeout_response, addr)
+            except:
+                pass
         except Exception as e:
             logging.error(f"Error receiving key from {addr[0]}: {str(e)}")
+            # Send error response
+            error_response = json.dumps({'status': 'error', 'message': str(e)}).encode()
+            try:
+                self.socket.sendto(error_response, addr)
+            except:
+                pass
         finally:
             self.socket.settimeout(None)  # Reset timeout
 
-    def reply(self, addr, result):
+    def reply(self, addr, result, is_keepalive=False, packet_data=None):
         try:
             if result:
-                self.socket.sendto('SPA Verification successful'.encode(), addr)
-                self.receive_key(addr)
+                if is_keepalive:
+                    # For keepalive packets, just send success response
+                    self.socket.sendto('SPA Keepalive acknowledged'.encode(), addr)
+                    if self.verbose:
+                        print(f"Keepalive acknowledged for {addr[0]}")
+                else:
+                    # For initial packets, send success response and wait for WireGuard key
+                    self.socket.sendto('SPA Verification successful'.encode(), addr)
+                    # Pass the packet_data to receive_key so it has access to resource_ip
+                    self.receive_key(addr, packet_data)
             else:
                 self.socket.sendto('SPA Verification Failed'.encode(), addr)
         except Exception as e:
@@ -264,8 +346,6 @@ class SPAServer:
             while self.running:
                 try:
                     data, addr = self.socket.recvfrom(4096)
-                    if self.verbose:
-                        logging.info(f"Received {len(data)} bytes from {addr[0]}:{addr[1]}")
                     self.handle_packet(data, addr)
                     
                 except socket.timeout:

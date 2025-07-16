@@ -148,11 +148,12 @@ class SPAClient:
     def send_wireguard_key(self, sock):
         try: 
             public_key = wireguard.get_public_key()
+            
+            if self.verbose:
+                print(f"WireGuard public key sent to the server: {public_key}")
 
             key_bytes = str(public_key).encode()
             sock.sendto(key_bytes, (self.config['server_ip'], self.config['server_port']))
-            if self.verbose:
-                print("WireGuard public key sent to server.")
             sock.settimeout(5)
 
             try:
@@ -181,6 +182,7 @@ class SPAClient:
             if self.verbose and not is_keepalive:
                 print(f"Requesting access to port: {self.config['access_port']}")
             
+            # Only wait for response and send WireGuard key for initial packets, not keepalive
             if not is_keepalive:
                 sock.settimeout(5)
                 try:
@@ -188,6 +190,7 @@ class SPAClient:
                     
                     if response:
                         print(response.decode())
+                        # Only send WireGuard key for successful initial authentication
                         self.send_wireguard_key(sock)
                         return True  # Success
                             
@@ -276,4 +279,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

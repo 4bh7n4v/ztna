@@ -6,6 +6,7 @@
     "ssh_host": "127.0.0.1",
     "ssh_port": 22,
     "ssh_key_path": "/home/ajay/ssh_keys/gw-01.key",
+    "wireguard_conf_path": "/mnt/c/Users/koppa/Desktop/projects/ztna/sdp_gateway/wg0.conf",
     "wireguard_interface": "wg0",
     "wireguard_public_key": "VLmkZ00wWPjLXwrYWBBdlhqC9pk4JxgdwK3kpYyluhg=",
     "listen_port": 51820,
