@@ -15,6 +15,7 @@ import base64
 import threading
 import argparse
 import wireguard
+import subprocess
 
 
 class SPAClient:
@@ -72,6 +73,63 @@ class SPAClient:
             sys.exit(1)
         if self.verbose:
                 print(f"Detected source IP: {self.config['source_ip']}")
+
+    def Create_Conf(self,response):
+        try:
+            client_ip = response["client_vpn_ip"]
+            gateway_pubkey = response["gateway_public_key"]
+            endpoint = response["gateway_endpoint"]
+            resource_ip = response["gateway_vpn_ip"]
+
+            config = f"""[Interface]
+                PrivateKey = {wireguard.get_private_key()}
+                Address = {client_ip}/32
+                DNS = 1.1.1.1
+
+                [Peer]
+                PublicKey = {gateway_pubkey}
+                Endpoint = {endpoint}
+                AllowedIPs = 0.0.0.0/0 , ::/0
+                PersistentKeepalive = 25
+                """
+            # setting Peer End point is Optional due to all peers are in same netowrk
+
+            output_path = "/tmp/wg0.conf"
+            with open(output_path, "w") as f:
+                f.write(config)
+
+            print(f"[+] WireGuard config created at: {output_path}")
+
+        except KeyError as e:
+            print(f"[!] Missing key in response: {e}")
+        except Exception as ex:
+            print(f"[!] Error creating WireGuard config: {ex}")
+        
+
+    def Create_interface(self):
+        wg_interface = "wg0"  # Your WireGuard interface name
+
+        try:
+            print("[+] Starting WireGuard interface...")
+            try:
+                subprocess.run(
+                    ["sudo", "wg-quick", "up", f"/tmp/{wg_interface}.conf"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+            except subprocess.CalledProcessError as e:
+                print("[!] WireGuard command failed:")
+                print(f"STDOUT:\n{e.stdout}")
+                print(f"STDERR:\n{e.stderr}")
+
+            print("[+] WireGuard interface is up. Press Ctrl+C to stop.")
+
+            # Simulate running service (you can replace this with your actual logic)
+
+        except subprocess.CalledProcessError as e:
+            print(f"[!] WireGuard command failed: {e}")
+
 
     def setup_crypto(self, password):
         kdf = PBKDF2HMAC(
@@ -154,12 +212,14 @@ class SPAClient:
 
             key_bytes = str(public_key).encode()
             sock.sendto(key_bytes, (self.config['server_ip'], self.config['server_port']))
-            sock.settimeout(5)
+            sock.settimeout(10)
 
             try:
                 response, addr = sock.recvfrom(1024)
                 if response:
                     print("Server response to key:", response.decode())
+                    self.Create_Conf(json.loads(response.decode()))
+                    self.Create_interface()
 
             except socket.timeout:
                 print("No response received after sending WireGuard key")

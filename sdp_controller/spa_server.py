@@ -18,6 +18,7 @@ import pprint
 import os
 import ipaddress
 import add_wg_peer
+import wireguard
 
 class SPAServer:
     def __init__(self, config_file='server_config.json', verbose=False, port=62201, daemon=False):
@@ -42,6 +43,8 @@ class SPAServer:
         self.setup_crypto()
         self.socket = None
         self.running = True
+        # Track active Commuincation
+        self.connection = False
         # Track received SPA packets
         self.spa_requests = {}
 
@@ -247,6 +250,7 @@ class SPAServer:
 
     def receive_key(self, addr, packet_data):
         try:
+            access_port = packet_data.get('access_port')
             self.socket.settimeout(10)  # Wait max 10s for the key
             data, sender = self.socket.recvfrom(4096)
             
@@ -267,18 +271,34 @@ class SPAServer:
                 gateways = add_wg_peer.load_gateways() # pass in the JSON file if you are using some other name other than sdp_gateway_details.json
                 gateway = add_wg_peer.resolve_gateway(resource_ip, gateways)
                 vpn_ip = gateway["vpn_ip_pool"][0]
+                del gateway["vpn_ip_pool"][0]
+
+                if not gateway.get("gateway_vpn_ip"):
+                    gw_vpn_ip = gateway["vpn_ip_pool"][0]
+                    del gateway["vpn_ip_pool"][0]
+                    gateway['gateway_vpn_ip'] = gw_vpn_ip
+                else:
+                    gw_vpn_ip = gateway['gateway_vpn_ip']
+
                 logging.info(f"WireGuard public key received from {addr[0]}: {key}")
+                gateway['gateway_vpn_ip']=gw_vpn_ip
                 
                 # Add peer to WireGuard
-                add_wg_peer.add_peer(vpn_ip, key, resource_ip, gateway)
-                
+                if not self.connection:
+                    add_wg_peer.update_wg0_conf(wireguard.get_private(),gw_vpn_ip,gateway['listen_port'])
+                    add_wg_peer.Copy_inference(gateway)
+
+                add_wg_peer.add_peer(self,vpn_ip, key,gateway)
+
+                gateway['wireguard_public_key'] = str(wireguard.get_public_key())
+                add_wg_peer.update_gateway(resource_ip,gateways,gateway)
                 # Prepare gateway details to send to client
                 gateway_details = {
                     'gateway_public_key': gateway['wireguard_public_key'],
                     'gateway_endpoint': f"{gateway['ssh_host']}:{gateway['listen_port']}",
                     'client_vpn_ip': vpn_ip,
                     'vpn_subnet': gateway['vpn_subnet'],
-                    'gateway_vpn_ip': gateway['vpn_ip_pool'][0] if gateway['vpn_ip_pool'] else None,
+                    'gateway_vpn_ip': gw_vpn_ip,
                     'status': 'success'
                 }
                 
