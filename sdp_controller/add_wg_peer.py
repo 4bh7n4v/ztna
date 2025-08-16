@@ -145,11 +145,19 @@ def update_wg0_conf(private_key, address, port, conf_path="/home/uneedituh/Deskt
         Address = {address}
         ListenPort = {port}
 
-        PostUp = iptables -t nat -A POSTROUTING -s  10.0.0.0/24 -o wlp2s0 -j MASQUERADE
         PostUp = sysctl -w net.ipv4.ip_forward=1
-        PostDown = iptables -t nat -D POSTROUTING -s  10.0.0.0/24 -o wlp2s0 -j MASQUERADE
+
+        PostUp = iptables -t nat -A POSTROUTING -o wlp2s0 -j MASQUERADE; \
+           iptables -A FORWARD -i wg0 -o wlp2s0 -j ACCEPT; \
+           iptables -A FORWARD -i wlp2s0 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+        PostDown = iptables -t nat -D POSTROUTING -o wlp2s0 -j MASQUERADE; \
+           iptables -D FORWARD -i wg0 -o wlp2s0 -j ACCEPT; \
+           iptables -D FORWARD -i wlp2s0 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
         PostDown = sysctl -w net.ipv4.ip_forward=0
-        
+
+            
         """
 
     try:

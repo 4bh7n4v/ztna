@@ -84,12 +84,12 @@ class SPAClient:
             config = f"""[Interface]
                 PrivateKey = {wireguard.get_private_key()}
                 Address = {client_ip}/32
-                DNS = 1.1.1.1
+                DNS = 8.8.8.8
 
                 [Peer]
                 PublicKey = {gateway_pubkey}
                 Endpoint = {endpoint}
-                AllowedIPs = 0.0.0.0/0 , ::/0
+                AllowedIPs = 10.0.0.0/24
                 PersistentKeepalive = 25
                 """
             # setting Peer End point is Optional due to all peers are in same netowrk
