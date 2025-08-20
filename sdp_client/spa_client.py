@@ -80,6 +80,7 @@ class SPAClient:
             gateway_pubkey = response["gateway_public_key"]
             endpoint = response["gateway_endpoint"]
             resource_ip = response["gateway_vpn_ip"]
+            vpn_subnet = response["vpn_subnet"]
 
             config = f"""[Interface]
                 PrivateKey = {wireguard.get_private_key()}
@@ -89,7 +90,7 @@ class SPAClient:
                 [Peer]
                 PublicKey = {gateway_pubkey}
                 Endpoint = {endpoint}
-                AllowedIPs = 10.0.0.0/24
+                AllowedIPs = {vpn_subnet}, 172.16.0.0/24, 192.168.1.0/24
                 PersistentKeepalive = 25
                 """
             # setting Peer End point is Optional due to all peers are in same netowrk
