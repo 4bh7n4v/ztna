@@ -23,6 +23,7 @@ class SPAClient:
              server_port=62201, protocol='tcp', source_ip=None, keepalive_interval=240):
         # Initialize verbose first so it can be used in load_config
         self.verbose = verbose
+        self.connection = 0
         
         # Load configuration
         self.load_config(config_file)
@@ -90,7 +91,7 @@ class SPAClient:
                 [Peer]
                 PublicKey = {gateway_pubkey}
                 Endpoint = {endpoint}
-                AllowedIPs = {vpn_subnet}, 172.16.0.0/24, 192.168.1.0/24
+                AllowedIPs = {vpn_subnet}, 172.16.0.0/12, 192.168.0.0/24
                 PersistentKeepalive = 25
                 """
             # setting Peer End point is Optional due to all peers are in same netowrk
@@ -213,7 +214,7 @@ class SPAClient:
 
             key_bytes = str(public_key).encode()
             sock.sendto(key_bytes, (self.config['server_ip'], self.config['server_port']))
-            sock.settimeout(10)
+            sock.settimeout(15)
 
             try:
                 response, addr = sock.recvfrom(1024)
@@ -221,6 +222,7 @@ class SPAClient:
                     print("Server response to key:", response.decode())
                     self.Create_Conf(json.loads(response.decode()))
                     self.Create_interface()
+                self.connection = 1
 
             except socket.timeout:
                 print("No response received after sending WireGuard key")
@@ -274,11 +276,12 @@ class SPAClient:
             self.send_keepalive
         )
         self.keepalive_timer.start()
-        if self.verbose:
+        if self.verbose and self.connection:
             print(f"Keepalive mechanism started (interval: {self.keepalive_interval} seconds)")
-        else:
+        elif self.connection:
             print("Keepalive mechanism started")
-
+        else :
+            print("No Wiregaurd key Recieved in Interval")
     def stop_keepalive(self):
         if self.keepalive_timer:
             self.keepalive_timer.cancel()

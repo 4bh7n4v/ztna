@@ -2,6 +2,13 @@ import subprocess
 import sys
 import json
 import os
+import logging
+import ipaddress
+
+
+
+WG_CONF_PATH = "/etc/wireguard/wg0.conf"
+GATEWAY_FILE_PATH = "sdp_gateway_details.json" # Make sure this matches the filename you use
 
 def load_gateways(json_path="sdp_gateway_details.json"):
     try:
@@ -57,13 +64,49 @@ def update_gateway(resource_ip, gateways, updated_gateway, file_path="sdp_gatewa
         return False
 
 
+def return_ip_to_pool(ip_address):
+    """
+    (Helper function) Adds an IP address back to the available pool in the gateway details JSON.
+    """
+    try:
+        with open(GATEWAY_FILE_PATH, 'r') as f:
+            gateways = json.load(f)
+
+        ip_obj = ipaddress.ip_address(ip_address)
+        gateway_found = False
+
+        for name, details in gateways.items():
+            subnet = ipaddress.ip_network(details['vpn_subnet'])
+            if ip_obj in subnet:
+                if ip_address not in details['vpn_ip_pool']:
+                    details['vpn_ip_pool'].append(ip_address)
+                    logging.info(f"Returned IP {ip_address} to the pool for gateway '{name}'.")
+                else:
+                    logging.warning(f"IP {ip_address} was already in the pool for gateway '{name}'.")
+                gateway_found = True
+                break
+        
+        if not gateway_found:
+            logging.warning(f"Could not find a matching gateway for IP {ip_address} to return it to the pool.")
+            return
+
+        with open(GATEWAY_FILE_PATH, 'w') as f:
+            json.dump(gateways, f, indent=4)
+
+    except (FileNotFoundError, json.JSONDecodeError, KeyError) as e:
+        logging.error(f"Could not return IP to pool. Error with {GATEWAY_FILE_PATH}: {e}")
+    except Exception as e:
+        logging.error(f"An unexpected error occurred in return_ip_to_pool: {e}")
+
+
 def add_peer(server, client_vpn_ip, client_pub_key, gateway):
 
     ssh_user = gateway["ssh_user"]
     ssh_host = gateway["ssh_host"]
     ssh_port = gateway["ssh_port"]
     ssh_key_path = gateway["ssh_key_path"]
-    wg_interface = gateway["wireguard_interface"]  # e.g., 'wg0'
+    wg_interface = gateway["wireguard_interface"]  
+
 
 # gateway dioesnt require endpoints
 

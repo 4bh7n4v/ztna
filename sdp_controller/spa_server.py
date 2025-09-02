@@ -19,6 +19,7 @@ import os
 import ipaddress
 import add_wg_peer
 import wireguard
+import subprocess
 
 class SPAServer:
     def __init__(self, config_file='server_config.json', verbose=False, port=62201, daemon=False):
@@ -47,6 +48,7 @@ class SPAServer:
         self.connection = False
         # Track received SPA packets
         self.spa_requests = {}
+        self._lock = threading.Lock()
 
     def load_config(self, config_file):
         try:
@@ -161,7 +163,7 @@ class SPAServer:
         protocol = packet_data.get('protocol')
         
         key = f"{source_ip}:{access_port}:{protocol}"
-        current_time = time.time()
+        current_time = int(time.time())
         
         if key in self.spa_requests:
             last_request_time = self.spa_requests[key]['timestamp']
@@ -219,24 +221,34 @@ class SPAServer:
             
             # Determine if this is a keepalive packet
             is_keepalive = self.is_keepalive_packet(packet_data)
-            
-            # Log the access request
             key = f"{source_ip}:{packet_data.get('access_port', '')}:{packet_data.get('protocol', '')}"
-            self.spa_requests[key] = {
-                'timestamp': time.time(),
-                'data': packet_data
-            }
-            
+
             if is_keepalive:
-                if self.verbose:
-                    logging.info(f"Keepalive packet received from {source_ip}")
-                # For keepalive packets, just send success response without expecting WireGuard key
+                # Keepalive → only update timestamp
+                logging.info(f"Keepalive packet received from {source_ip}")
+                with self._lock:
+                    if key in self.spa_requests:
+                        self.spa_requests[key]['timestamp'] = time.time()
+                    else:
+                        logging.warning(f"Keepalive received for unknown peer {key}")
                 self.reply(addr, True, is_keepalive=True)
+
             else:
-                logging.info(f"Authorized SPA request: {key}")
-                # For initial packets, send success response and expect WireGuard key
-                # Pass the packet_data to reply so it can be forwarded to receive_key
-                self.reply(addr, True, is_keepalive=False, packet_data=packet_data)
+                # SPA request → save full packet data
+                self.spa_requests[key] = {
+                    'timestamp': time.time(),
+                    'data': packet_data
+                }
+
+                if not self.connection:
+                    logging.info(f"Authorized SPA request: {key}")
+                    self.reply(addr, True, is_keepalive=False, packet_data=packet_data)
+                    self.connection = True  # mark connection as formed
+                else:
+                    # Tunnel exists but packet is NOT a keepalive → ignore it
+                    logging.warning(f"Unexpected packet from {source_ip} while connection already formed. Ignoring.")
+                    self.reply(addr, False, is_keepalive=False)
+
             
         except json.JSONDecodeError as e:
             logging.error(f"Invalid JSON in packet from {addr[0]}: {e}")
@@ -280,6 +292,14 @@ class SPAServer:
                 else:
                     gw_vpn_ip = gateway['gateway_vpn_ip']
 
+                client_ip = addr      # The peer’s public/external IP
+                peer_pubkey = key         # WireGuard public key received
+
+
+
+                if(self.verbose):
+                    logging.info(f"Stored peer mapping: {client_ip} -> {peer_pubkey}")
+
                 logging.info(f"WireGuard public key received from {addr[0]}: {key}")
                 gateway['gateway_vpn_ip']=gw_vpn_ip
                 
@@ -293,6 +313,15 @@ class SPAServer:
                 gateway['wireguard_public_key'] = str(wireguard.get_public_key())
                 add_wg_peer.update_gateway(resource_ip,gateways,gateway)
                 # Prepare gateway details to send to client
+                request_key = f"{addr[0]}:{packet_data.get('access_port')}:{packet_data.get('protocol')}"
+                with self._lock:    
+                    self.spa_requests[request_key] = {
+                        "public_key": peer_pubkey,
+                        "timestamp": time.time(),
+                        "vpn_ip": vpn_ip
+
+                    }
+
                 gateway_details = {
                     'gateway_public_key': gateway['wireguard_public_key'],
                     'gateway_endpoint': f"{gateway['ssh_host']}:{gateway['listen_port']}",
@@ -331,26 +360,72 @@ class SPAServer:
             except:
                 pass
         finally:
-            self.socket.settimeout(None)  # Reset timeout
+            self.socket.settimeout(None)  
 
     def reply(self, addr, result, is_keepalive=False, packet_data=None):
         try:
             if result:
-                if is_keepalive:
-                    # For keepalive packets, just send success response
+                if is_keepalive and self.connection:
                     self.socket.sendto('SPA Keepalive acknowledged'.encode(), addr)
                     if self.verbose:
                         print(f"Keepalive acknowledged for {addr[0]}")
-                else:
-                    # For initial packets, send success response and wait for WireGuard key
+                elif not self.connection:
                     self.socket.sendto('SPA Verification successful'.encode(), addr)
-                    # Pass the packet_data to receive_key so it has access to resource_ip
                     self.receive_key(addr, packet_data)
+                else:
+                    logging.warning(f"Ignoring non-keepalive SPA packet from {addr[0]} (connection already active)")
+                    self.socket.sendto('SPA already established'.encode(), addr)
             else:
                 self.socket.sendto('SPA Verification Failed'.encode(), addr)
         except Exception as e:
             logging.error(f"Error sending reply to {addr[0]}: {str(e)}")
-        
+
+
+    def _peer_cleanup_thread(self):
+        logging.info("Peer cleanup thread started.")
+        PEER_TIMEOUT = self.config.get('peer_timeout', 120)
+
+        while self.running:
+            time.sleep(20)
+            logging.debug("Cleanup thread awake and checking for timed-out peers.")
+
+            now = time.time()
+            peers_to_remove = []
+
+            if not self.spa_requests:
+                continue
+
+            # Phase 1: Identify all timed-out peers.
+            with self._lock:
+                for key, details in self.spa_requests.items():
+                    # details is now a dictionary: {"public_key": ..., "timestamp": ...}
+                    timestamp = details.get('timestamp',0)
+                    peer_pubkey = details.get('public_key')
+                    now=time.time()
+                    age = now - timestamp
+                    logging.debug(f"Checking peer '{key}':'{peer_pubkey}' Session age is {int(age)}s. Timeout is {PEER_TIMEOUT}s.")
+
+                    if age > PEER_TIMEOUT:
+                        logging.warning(f"Peer '{key}' has timed out. Executing send_Open.py...")
+
+                        if peer_pubkey:
+                            try:
+                                # Pass peer public key as command-line argument
+                                subprocess.run(
+                                    ["python3", "/home/uneedituh/Controller/send_Open.py", peer_pubkey],
+                                    check=True
+                                )
+                                logging.info(f"send_Open.py executed successfully for peer '{key}' with public key {peer_pubkey}.")
+                            except subprocess.CalledProcessError as e:
+                                logging.error(f"Failed to execute send_Open.py for peer '{key}': {e}")
+                        else:
+                            logging.warning(f"No public key found for peer '{key}', skipping send_Open.py.")
+
+                        peers_to_remove.append((key, details))
+
+
+
+            
     def start(self):
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -362,6 +437,9 @@ class SPAServer:
             # Set up signal handlers for graceful shutdown
             signal.signal(signal.SIGINT, self.signal_handler)
             signal.signal(signal.SIGTERM, self.signal_handler)
+
+            cleanup_thread = threading.Thread(target=self._peer_cleanup_thread, daemon=True)
+            cleanup_thread.start()
             
             while self.running:
                 try:
@@ -371,7 +449,7 @@ class SPAServer:
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    if self.running:  # Only log if we're still supposed to be running
+                    if self.running:  
                         logging.error(f"Error processing packet: {str(e)}")
                     continue
                     

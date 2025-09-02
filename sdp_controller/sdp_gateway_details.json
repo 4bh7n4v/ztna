@@ -2,13 +2,13 @@
   {
     "gateway_id": "gw-01",
     "name": "sdp Gateway 1",
-    "ssh_user": "azureuser",
-    "ssh_host": "4.187.197.201",
+    "ssh_user": "seed",
+    "ssh_host": "192.168.181.248",
     "ssh_port": 22,
-    "ssh_key_path": "/home/uneedituh/Desktop/azuremachine.pem",
+    "ssh_key_path": "/home/uneedituh/.ssh/id_ed25519.pub",
     "wireguard_conf_path": "/home/uneedituh/Desktop/ztna/sdp_gateway/wg0.conf",
     "wireguard_interface": "wg0",
-    "wireguard_public_key": "IaFUcKp8eO1vCku+xEfL9t9Ik1Q67bIJdWUUr55gIFk=",
+    "wireguard_public_key": "e1kqMwvd6Uj2kgf8Xx5DbQsLUX4Y2+76KXsW/uVj6jw=",
     "listen_port": 51820,
     "vpn_subnet": "10.0.0.0/24",
     "vpn_ip_pool": [
