@@ -16,7 +16,7 @@ KEY_PASS ?= MyCAPassword  # Optional passphrase for CA key
 all: check_ca
 
 # -------------------------
-# 1️⃣ Check if CA key and cert exist
+# 1 Check if CA key and cert exist
 # -------------------------
 check_ca:
 	@if [ -f "$(CA_KEY)" ] && [ -f "$(CA_CERT)" ]; then \
@@ -27,7 +27,7 @@ check_ca:
 	fi
 
 # -------------------------
-# 2️⃣ Create new CA (key + certificate)
+# 2 Create new CA (key + certificate)
 # -------------------------
 create_ca:
 	@echo "[+] Creating CA directory..."
@@ -43,18 +43,26 @@ create_ca:
 	@echo "[→] Ready to sign client CSRs."
 
 # -------------------------
-# 3️⃣ Sign client CSR
+# 3 Fully automatic sign client CSRs and clean CSR files
 # -------------------------
 sign: check_ca
-	@read -p "Enter path to client CSR: " CSR_FILE; \
-	OUTPUT_CRT="$(OUTPUT_DIR)/$$(basename $$CSR_FILE .csr).crt"; \
-	echo "[+] Signing CSR $$CSR_FILE..."; \
-	openssl x509 -req -in $$CSR_FILE -CA $(CA_CERT) -CAkey $(CA_KEY) -CAcreateserial \
-		-out $$OUTPUT_CRT -days 365 -sha256 -passin env:KEY_PASS; \
-	echo "[✓] Signed certificate saved at $$OUTPUT_CRT"
+	@echo "[*] Signing all client CSRs..."
+	@for csr in controller/*.csr gateway/*.csr; do \
+		if [ -f "$$csr" ]; then \
+			OUTPUT_CRT="$(OUTPUT_DIR)/$$(basename $$csr .csr).crt"; \
+			echo "[+] Signing $$csr..."; \
+			openssl x509 -req -in $$csr -CA $(CA_CERT) -CAkey $(CA_KEY) -CAcreateserial \
+				-out $$OUTPUT_CRT -days 365 -sha256 -passin env:KEY_PASS; \
+			echo "[✓] Signed certificate saved at $$OUTPUT_CRT"; \
+			echo "[*] Removing CSR $$csr..."; \
+			rm -f $$csr; \
+		else \
+			echo "[!] No CSRs found in controller/ or gateway/"; \
+		fi \
+	done
 
 # -------------------------
-# 4️⃣ Verify a certificate
+# 4 Verify a certificate
 # -------------------------
 verify:
 	@read -p "Enter path to certificate to verify: " CRT_FILE; \
@@ -62,7 +70,7 @@ verify:
 	openssl verify -CAfile $(CA_CERT) $$CRT_FILE
 
 # -------------------------
-# 5️⃣ Clean generated CA files
+# 5 Clean generated CA files
 # -------------------------
 clean:
 	@echo "[!] Cleaning CA directory..."
@@ -70,14 +78,14 @@ clean:
 	@echo "[✓] CA files cleaned."
 
 # -------------------------
-# 6️⃣ Help target
+# 6 Help target
 # -------------------------
 help:
 	@echo "Available Makefile targets for CA Authority:"
 	@echo "----------------------------------------------------"
 	@echo "  make all       -> Check CA key/cert, create if missing"
 	@echo "  make create_ca -> Force creation of CA key + self-signed cert"
-	@echo "  make sign      -> Sign a client CSR with CA"
+	@echo "  make sign      -> Automatically sign all client CSRs in controller/ and gateway/ and delete CSRs"
 	@echo "  make verify    -> Verify a certificate against the CA"
 	@echo "  make clean     -> Remove all CA files"
 	@echo "  make help      -> Show this help message"

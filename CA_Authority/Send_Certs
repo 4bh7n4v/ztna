@@ -1,0 +1,43 @@
+#!/bin/bash
+set -euo pipefail
+
+CLIENTS_JSON="clients.json"
+CA_CERT="ca.crt"
+SIGNED_CERTS_DIR="$(pwd)/signed_certs"
+
+# check dependencies
+if ! command -v jq >/dev/null 2>&1; then
+    echo "Error: 'jq' is required to parse JSON"
+    exit 1
+fi
+
+# check files
+[ ! -f "$CA_CERT" ] && { echo "CA cert '$CA_CERT' not found"; exit 1; }
+[ ! -d "$SIGNED_CERTS_DIR" ] && { echo "Signed certs dir '$SIGNED_CERTS_DIR' not found"; exit 1; }
+[ ! -f "$CLIENTS_JSON" ] && { echo "Clients JSON '$CLIENTS_JSON' not found"; exit 1; }
+
+# iterate over clients
+jq -c '.[]' "$CLIENTS_JSON" | while read -r client; do
+    NAME=$(echo "$client" | jq -r '.name')
+    IP=$(echo "$client" | jq -r '.ip')
+    USER=$(echo "$client" | jq -r '.user')
+    REMOTE_DIR=$(echo "$client" | jq -r '.remote_dir')
+
+    CERT_FILE="$SIGNED_CERTS_DIR/$NAME.crt"
+    if [ ! -f "$CERT_FILE" ]; then
+        echo "Warning: Certificate for $NAME not found, skipping."
+        continue
+    fi
+
+    echo "[*] Sending $CERT_FILE and $CA_CERT to $USER@$IP:$REMOTE_DIR"
+
+    # create remote dir
+    ssh "$USER@$IP" "mkdir -p '$REMOTE_DIR' && chmod 755 '$REMOTE_DIR'"
+
+    # copy files
+    scp "$CERT_FILE" "$CA_CERT" "$USER@$IP:$REMOTE_DIR/"
+
+    echo "[+] Done for $NAME ($IP)"
+done
+
+echo "[+] All certificates sent."
