@@ -10,12 +10,12 @@ C  = IN
 ST = Kerala
 L  = Amritapuri
 O  = MyOrg
-OU = Gateway
-CN = gateway.local
+OU = SDP
+CN = __COMMON_NAME__
 
 [ v3_req ]
 subjectAltName = @alt_names
 
 [ alt_names ]
-DNS.1   = gateway.local
-IP.1    = 192.168.233.247
+DNS.1 = __DNS_NAME__
+IP.1  = __IP_ADDRESS__
