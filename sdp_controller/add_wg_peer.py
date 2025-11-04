@@ -6,7 +6,6 @@ import logging
 import ipaddress
 
 
-
 WG_CONF_PATH = "/etc/wireguard/wg0.conf"
 GATEWAY_FILE_PATH = "sdp_gateway_details.json" # Make sure this matches the filename you use
 
@@ -111,16 +110,19 @@ def add_peer(server, client_vpn_ip, client_pub_key, gateway):
 # gateway dioesnt require endpoints
 
     append_cmd = (
-        f'echo -e "\\t[Peer]\\n\\tPublicKey = {client_pub_key}\\n\\tAllowedIPs = {client_vpn_ip}/32"'
+        f'echo -e "\\t[Peer]\\n\\tPublicKey = {client_pub_key}\\n\\tAllowedIPs = {client_vpn_ip}"'
         f'>> /tmp/wireguard/{wg_interface}.conf'
     )
 
-    if not server.connection:
+    if not server.connection and not server.Enabled:
         # Intial User
         wg_cmd = f"{append_cmd} && sudo wg-quick up /tmp/wireguard/{wg_interface}.conf"
-    else:
-        # Multi-User
-        wg_cmd = f"{append_cmd} && sudo wg-quick down /tmp/wireguard/{wg_interface}.conf && sudo wg-quick up /tmp/wireguard/{wg_interface}.conf"
+    elif server.Enabled:
+    # Multi-User — reload config safely
+        wg_cmd = f"{append_cmd} && sudo wg-quick strip /tmp/wireguard/wg0.conf > /tmp/wireguard/stripped.conf && \
+                    sudo wg syncconf wg0 /tmp/wireguard/stripped.conf && \
+                    rm -f /tmp/wireguard/stripped.conf"
+
 
     ssh_command = [
         "ssh", "-v",
@@ -133,8 +135,10 @@ def add_peer(server, client_vpn_ip, client_pub_key, gateway):
 
     
     try:
-        result = subprocess.run(ssh_command, capture_output=True, text=True, check=True)
+        print(f"[+] Executing WireGuard Command")
+        result = subprocess.run(ssh_command)
         print("[+] Peer successfully added to live WireGuard interface.")
+
         server.connection = True
     except subprocess.CalledProcessError as e:
         print(f"[!] Failed to run wg command:\n{e.stderr}")
@@ -172,7 +176,7 @@ def Copy_inference(gateway):
         except subprocess.CalledProcessError as e:
             print(f"[!] Failed to transfer file to {gateway['name']}.\nError: {e}")
 
-def update_wg0_conf(private_key, address, port, conf_path="/home/uneedituh/Desktop/ztna/sdp_gateway/wg0.conf"):
+def update_wg0_conf(private_key, address, port, conf_path="/home/uneedituh/ztna/sdp_gateway/wg0.conf"):
     """
     Always write a fresh wg0.conf file with the given [Interface] section.
 
@@ -208,7 +212,7 @@ def update_wg0_conf(private_key, address, port, conf_path="/home/uneedituh/Deskt
             f.write(interface_block)
         print(f"[+] New wg0.conf file written to: {conf_path}")
     except Exception as e:
-        print(f"[!] Failed to write wg0.conf: {e}")
+        print(f"[!] Failed to write wg0.conf: {e}") 
 
 # # -------- Execution --------
 # gateways = load_gateways()  # now returns the list

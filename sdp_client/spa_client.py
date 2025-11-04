@@ -17,10 +17,14 @@ import argparse
 import wireguard
 import subprocess
 
+import subprocess, threading, time, os
+
+WG_INTERFACE = "wg0"
+THRESHOLD = 600  # seconds (10 min)
 
 class SPAClient:
     def __init__(self, config_file='client_config.json', verbose=False, access_port=None, 
-             server_port=62201, protocol='tcp', source_ip=None, keepalive_interval=240):
+             server_port=62201, protocol='tcp', source_ip=None, keepalive_interval=240,interface="wg0"):
         # Initialize verbose first so it can be used in load_config
         self.verbose = verbose
         self.connection = 0
@@ -47,6 +51,11 @@ class SPAClient:
         
         self.setup_crypto(self.password)
         self.keepalive_timer = None
+
+        self.interface = interface
+        self.monitor_script = "/home/kali/Desktop/ztna/sdp_client/wg_stale_monitor.py"
+        self.stale_timeout = 600
+
 
     def get_client_ip(self): 
         """
@@ -91,7 +100,7 @@ class SPAClient:
                 [Peer]
                 PublicKey = {gateway_pubkey}
                 Endpoint = {endpoint}
-                AllowedIPs = {vpn_subnet}, 172.16.0.0/12, 192.168.0.0/24
+                AllowedIPs = {vpn_subnet}, 172.16.0.0/12, 192.168.0.0/12
                 PersistentKeepalive = 25
                 """
             # setting Peer End point is Optional due to all peers are in same netowrk
@@ -282,10 +291,86 @@ class SPAClient:
             print("Keepalive mechanism started")
         else :
             print("No Wiregaurd key Recieved in Interval")
+
     def stop_keepalive(self):
         if self.keepalive_timer:
             self.keepalive_timer.cancel()
             print("Keepalive mechanism stopped")
+
+        # -----------------------------
+    # WireGuard Handshake Monitoring
+    # -----------------------------
+    def monitor_handshake(self):
+        """
+        Background monitor that checks the latest WireGuard handshake every minute.
+        If no handshake for > THRESHOLD seconds, the tunnel is removed.
+        """
+        print(f"[+] Handshake monitor started for {WG_INTERFACE} (threshold: {THRESHOLD}s)")
+        
+        while True:
+            try:
+                # Check if interface exists
+                result = subprocess.run(
+                    ["sudo", "wg", "show", WG_INTERFACE, "dump"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+
+                if result.returncode != 0:
+                    print(f"[!] WireGuard not active: {result.stderr.strip()}")
+                    time.sleep(60)
+                    continue
+
+                lines = result.stdout.strip().splitlines()
+                if len(lines) < 2:
+                    print("[!] No active peers on interface.")
+                    time.sleep(60)
+                    continue
+
+                # Extract latest handshake timestamp
+                peer_info = lines[1].split("\t")
+                latest = int(peer_info[4]) if peer_info[4].isdigit() else 0
+                now = int(time.time())
+                age = now - latest if latest else -1
+
+                print(f"[monitor] Handshake age: {age}s")
+
+                if latest == 0 or age > THRESHOLD:
+                    print(f"[!] No handshake for >{THRESHOLD}s — cleaning up interface...")
+                    pubkey = peer_info[0]
+                    subprocess.run(
+                        ["sudo", "wg", "set", WG_INTERFACE, "peer", pubkey, "remove"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    print(f"[!] Peer {pubkey} removed due to inactivity.")
+                    break
+
+            except Exception as e:
+                print(f"[!] Handshake monitor error: {e}")
+
+            time.sleep(60)  # check every minute
+
+
+    def start_monitor_process(self):
+        """
+        Launches the stale-handshake monitor as a detached process.
+        Survives SPA client termination.
+        """
+        print("[+] Launching detached monitor process...")
+        subprocess.Popen(
+            [
+                sys.executable,
+                self.monitor_script,
+                self.interface,
+                str(self.stale_timeout)
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True  # detaches from parent process
+        )
+        print("[+] Monitor process started successfully (independent).")
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='SPA Client - Sends Single Packet Authorization',
@@ -329,6 +414,7 @@ def main():
     
     # Send initial packet and check if successful
     if client.send_packet():
+        client.start_monitor_process()
         client.start_keepalive()  # Only start keepalive if initial packet was successful
         try:
             # Keep the script running

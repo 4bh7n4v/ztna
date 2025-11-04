@@ -15,8 +15,10 @@ IP_ADDRESS := $(shell hostname -I | awk '{print $$1}')
 KEY_PASS ?= MySecretPassword
 
 # Remote CA info (change these to your CA machine)
-CA_HOST := user@192.168.1.50
-CA_PATH := ~/Desktop/ztna/CA_Authority/Controller/
+CA_USER := kali
+CA_IP := 192.168.43.129
+CA_HOST := $(CA_USER)@$(CA_IP)
+CA_REMOTE_DIR := /home/$(CA_USER)/Desktop/ztna/CA_Authority/controller
 CA_ROOT_PATH := ~/Desktop/ztna/CA_Authority/CA/ca.crt
 
 # -------------------------
@@ -59,18 +61,18 @@ $(OUTPUT_DIR)/controller.csr: $(OUTPUT_DIR)/controller.key $(OUTPUT_DIR)/san_con
 # -------------------------
 Send2CA: $(OUTPUT_DIR)/controller.csr
 	@echo "[+] Sending Controller CSR to remote CA..."
-	@scp $< $(CA_HOST):$(CA_PATH)
+	@scp $< $(CA_HOST):$(CA_REMOTE_DIR)
 	@echo "[✓] CSR successfully sent to remote CA."
 	@echo "[→] Ask CA admin to run 'make sign-all' on CA Authority."
 
 # -------------------------
 # 5️⃣ Download signed certificate and CA root
 # -------------------------
-FetchCerts:
-	@echo "[+] Downloading signed certificate and CA root from CA Authority..."
-	@scp $(CA_HOST):$(CA_PATH)/controller.crt $(OUTPUT_DIR)/controller.crt || echo "[!] controller.crt not found on CA yet."
-	@scp $(CA_HOST):$(CA_ROOT_PATH) $(OUTPUT_DIR)/ca.crt || echo "[!] ca.crt not found on CA yet."
-	@echo "[✓] Files downloaded to $(OUTPUT_DIR)."
+# FetchCerts:
+# 	@echo "[+] Downloading signed certificate and CA root from CA Authority..."
+# 	@scp $(CA_HOST):$(CA_PATH)/controller.crt $(OUTPUT_DIR)/controller.crt || echo "[!] controller.crt not found on CA yet."
+# 	@scp $(CA_HOST):$(CA_ROOT_PATH) $(OUTPUT_DIR)/ca.crt || echo "[!] ca.crt not found on CA yet."
+# 	@echo "[✓] Files downloaded to $(OUTPUT_DIR)."
 
 # -------------------------
 # 6️⃣ Verify signed certificate
@@ -96,7 +98,7 @@ help:
 	@echo "----------------------------------------------------"
 	@echo "  make all         -> Generate SAN, AES-encrypted key, and CSR"
 	@echo "  make Send2CA     -> Send CSR to remote CA machine"
-	@echo "  make FetchCerts  -> Fetch signed cert + CA root from CA"
+#	@echo "  make FetchCerts  -> Fetch signed cert + CA root from CA"
 	@echo "  make verify      -> Verify signed certificate details"
 	@echo "  make clean       -> Remove all generated OpenSSL files"
 	@echo ""

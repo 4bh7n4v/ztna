@@ -20,6 +20,7 @@ import ipaddress
 import add_wg_peer
 import wireguard
 import subprocess
+from Gateway_SSL import send_resync, send_remove_peer
 
 class SPAServer:
     def __init__(self, config_file='server_config.json', verbose=False, port=62201, daemon=False):
@@ -46,11 +47,13 @@ class SPAServer:
         self.running = True
         # Track active Commuincation
         self.connection = False
+        self.Enabled = False
         # Track received SPA packets
         self.spa_requests = {}
+        self.recently_timed_out = {}
         self._lock = threading.Lock()
 
-    def load_config(self, config_file):
+    def load_config(self, config_file): 
         try:
             with open(config_file, 'r') as f:
                 self.config = json.load(f)
@@ -174,6 +177,17 @@ class SPAServer:
         return False
     
     def handle_packet(self, data, addr):
+        peer_ip = addr[0]
+
+        # ✅ Ignore packets from recently timed-out peers (probably WireGuard keepalives)
+        if peer_ip in self.recently_timed_out:
+            if time.time() - self.recently_timed_out[peer_ip] < 10:
+                logging.warning(f"Ignoring packet from timed-out peer {peer_ip} — waiting for new SPA.")
+                return
+            else:
+                # After 10 s grace, forget timeout entry
+                del self.recently_timed_out[peer_ip]
+
         try:
             if self.verbose:
                 print(f"\nReceived packet from {addr[0]}:{addr[1]}")
@@ -244,6 +258,7 @@ class SPAServer:
                     logging.info(f"Authorized SPA request: {key}")
                     self.reply(addr, True, is_keepalive=False, packet_data=packet_data)
                     self.connection = True  # mark connection as formed
+                    self.Enabled = True
                 else:
                     # Tunnel exists but packet is NOT a keepalive → ignore it
                     logging.warning(f"Unexpected packet from {source_ip} while connection already formed. Ignoring.")
@@ -310,6 +325,7 @@ class SPAServer:
 
                 add_wg_peer.add_peer(self,vpn_ip, key,gateway)
 
+
                 gateway['wireguard_public_key'] = str(wireguard.get_public_key())
                 add_wg_peer.update_gateway(resource_ip,gateways,gateway)
                 # Prepare gateway details to send to client
@@ -329,7 +345,7 @@ class SPAServer:
                     'vpn_subnet': gateway['vpn_subnet'],
                     'gateway_vpn_ip': gw_vpn_ip,
                     'status': 'success'
-                }
+                }   
                 
                 # Send gateway details as JSON response
                 response = json.dumps(gateway_details).encode()
@@ -380,7 +396,6 @@ class SPAServer:
         except Exception as e:
             logging.error(f"Error sending reply to {addr[0]}: {str(e)}")
 
-
     def _peer_cleanup_thread(self):
         logging.info("Peer cleanup thread started.")
         PEER_TIMEOUT = self.config.get('peer_timeout', 120)
@@ -395,38 +410,76 @@ class SPAServer:
             if not self.spa_requests:
                 continue
 
-            # Phase 1: Identify all timed-out peers.
+            # Phase 1: Identify all timed-out peers
             with self._lock:
-                for key, details in self.spa_requests.items():
-                    # details is now a dictionary: {"public_key": ..., "timestamp": ...}
-                    timestamp = details.get('timestamp',0)
+                for key, details in list(self.spa_requests.items()):
+                    timestamp = details.get('timestamp', 0)
                     peer_pubkey = details.get('public_key')
-                    now=time.time()
                     age = now - timestamp
-                    logging.debug(f"Checking peer '{key}':'{peer_pubkey}' Session age is {int(age)}s. Timeout is {PEER_TIMEOUT}s.")
-
+                    logging.debug(f"Checking peer '{key}' (pubkey={peer_pubkey}) — age {int(age)}s / timeout {PEER_TIMEOUT}s")
+#chnaged here
                     if age > PEER_TIMEOUT:
-                        logging.warning(f"Peer '{key}' has timed out. Executing send_Open.py...")
+                        logging.warning(f"Peer '{key}' has timed out. Cleaning up...")
+                        try:
+                            if peer_pubkey:
+                                response = send_remove_peer(peer_pubkey)
+                                logging.info(f"Gateway response for '{key}': {response.strip()}")
+                            else:
+                                logging.warning(f"No public key found for peer '{key}' — skipping removal request.")
 
-                        if peer_pubkey:
+                            # Mark for removal
+                            peers_to_remove.append(key)
+
+                        except Exception as e:
+                            logging.error(f"Failed to contact gateway for '{key}': {e}")
+
+
+            # Phase 2: Actually remove timed-out peers
+            if peers_to_remove:
+                with self._lock:
+                    for key in peers_to_remove:
+                        peer_info = self.spa_requests.pop(key, None)
+                        if peer_info:
+                            pubkey = peer_info.get('public_key', 'unknown')
+                            logging.info(f"Removed peer '{key}' (pubkey={pubkey}) from SPA table.")
+                            
+                            # Optional: Remove peer from WireGuard config
                             try:
-                                # Pass peer public key as command-line argument
-                                subprocess.run(
-                                    ["python3", "/home/uneedituh/Controller/send_Open.py", peer_pubkey],
-                                    check=True
-                                )
-                                logging.info(f"send_Open.py executed successfully for peer '{key}' with public key {peer_pubkey}.")
-                            except subprocess.CalledProcessError as e:
-                                logging.error(f"Failed to execute send_Open.py for peer '{key}': {e}")
-                        else:
-                            logging.warning(f"No public key found for peer '{key}', skipping send_Open.py.")
+                                if hasattr(add_wg_peer, 'remove_peer'):
+                                    add_wg_peer.remove_peer(pubkey)
+                                    logging.info(f"Peer '{key}' also removed from WireGuard config.")
+                            except Exception as e:
+                                logging.warning(f"Failed to remove peer '{key}' from WireGuard: {e}")
 
-                        peers_to_remove.append((key, details))
+                            # ✅ Completely delete peer info from memory
+                            if hasattr(self, 'active_peers') and key in self.active_peers:
+                                del self.active_peers[key]
+                            if hasattr(self, 'hmac_table') and key in self.hmac_table:
+                                del self.hmac_table[key]
 
 
+                # ✅ Mark peer's IP as recently timed out
+                peer_ip = key.split(":")[0]
+                self.recently_timed_out[peer_ip] = time.time()
+                logging.info(f"Marked {peer_ip} as recently timed out.")
+
+
+
+                # Reset connection state if no active peers left
+                with self._lock:
+                    if not self.spa_requests:
+                        self.connection = False
+                        logging.info("All peers cleaned up — connection flag reset to False.")
+                                # ✅ After all timed-out peers are cleaned up, resync Gateway
+                try:
+                    logging.info("Triggering Gateway WireGuard resync...")
+                    response = send_resync()
+                    logging.info(f"Gateway resync response: {response.strip()}")
+                except Exception as e:
+                    logging.error(f"Failed to trigger Gateway resync: {e}")
 
             
-    def start(self):
+    def start(self):    
         try:
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -456,7 +509,7 @@ class SPAServer:
         except KeyboardInterrupt:
             logging.info("Received KeyboardInterrupt, shutting down...")
         except Exception as e:
-            logging.error(f"Server error: {str(e)}")
+            logging.error(f"Server error: {str(e)}")    
         finally:
             self.cleanup()
 
@@ -539,4 +592,5 @@ def main():
         server.cleanup()
 
 if __name__ == "__main__":
+   
     main()

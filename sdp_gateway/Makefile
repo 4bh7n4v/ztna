@@ -15,8 +15,10 @@ IP_ADDRESS := $(shell hostname -I | awk '{print $$1}')
 KEY_PASS ?= MySecretPassword
 
 # CA information for reference (remote CA, no local signing)
-CA_HOST := user@CA_HOST
-CA_REMOTE_DIR := /path/to/CA/incoming/
+CA_USER := kali
+CA_IP := 192.168.43.129
+CA_HOST := $(CA_USER)@$(CA_IP)
+CA_REMOTE_DIR := /home/$(CA_USER)/Desktop/ztna/CA_Authority/gateway
 
 # -------------------------
 # Default target
