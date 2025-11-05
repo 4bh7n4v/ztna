@@ -16,7 +16,7 @@ KEY_PASS ?= MySecretPassword
 
 # Remote CA info (change these to your CA machine)
 CA_USER := kali
-CA_IP := 192.168.43.129
+CA_IP := 10.0.1.3
 CA_HOST := $(CA_USER)@$(CA_IP)
 CA_REMOTE_DIR := /home/$(CA_USER)/Desktop/ztna/CA_Authority/controller
 CA_ROOT_PATH := ~/Desktop/ztna/CA_Authority/CA/ca.crt

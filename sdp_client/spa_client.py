@@ -100,7 +100,7 @@ class SPAClient:
                 [Peer]
                 PublicKey = {gateway_pubkey}
                 Endpoint = {endpoint}
-                AllowedIPs = {vpn_subnet}, 172.16.0.0/12, 192.168.0.0/12
+                AllowedIPs = {vpn_subnet}, 172.16.0.0/16, 192.168.0.0/16
                 PersistentKeepalive = 25
                 """
             # setting Peer End point is Optional due to all peers are in same netowrk

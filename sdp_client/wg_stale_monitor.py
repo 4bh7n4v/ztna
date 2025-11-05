@@ -40,15 +40,29 @@ def monitor(interface, timeout):
         print(f"[monitor] Handshake age: {diff}s")
 
         if diff > timeout:
-            print(f"[!] Stale handshake detected (> {timeout}s). Removing peer.")
-            # Remove all peers to clean up
-            subprocess.run(["sudo", "wg", "set", interface, "peer", "remove"],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            subprocess.run(["sudo", "wg-quick", "down", interface],
-                           stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            break
+            config_path = f"/tmp/{interface}.conf"
+            print(f"[!] Stale handshake detected (> {timeout}s). Stopping interface and deleting config.")
+            result = subprocess.run(
+                ["sudo", "wg-quick", "down", config_path],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE
+            )
 
-        time.sleep(60)  # check every 1 minute
+
+            if result.returncode == 0:
+                if os.path.exists(config_path):
+                    try:
+                        os.remove(config_path)
+                        print(f"[+] Configuration file '{config_path}' deleted.")
+                    except Exception as e:
+                        print(f"[!] Failed to delete config file: {e}")
+                else:
+                    print(f"[!] Config file '{config_path}' not found.")
+            else:
+                print(f"[!] Failed to bring down WireGuard interface '{config_path}'. Skipping deletion.")
+                print(result.stderr.decode()) 
+
+        time.sleep(60) 
 
 
 if __name__ == "__main__":

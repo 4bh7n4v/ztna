@@ -194,13 +194,13 @@ def update_wg0_conf(private_key, address, port, conf_path="/home/uneedituh/ztna/
 
         PostUp = sysctl -w net.ipv4.ip_forward=1
 
-        PostUp = iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE; \
-           iptables -A FORWARD -i wg0 -o eth0 -j ACCEPT; \
-           iptables -A FORWARD -i eth0 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+        PostUp = iptables -t nat -A POSTROUTING -o ens37 -j MASQUERADE; \
+           iptables -A FORWARD -i wg0 -o ens37 -j ACCEPT; \
+           iptables -A FORWARD -i ens37 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
 
-        PostDown = iptables -t nat -D POSTROUTING -o eth0 -j MASQUERADE; \
-           iptables -D FORWARD -i wg0 -o eth0 -j ACCEPT; \
-           iptables -D FORWARD -i eth0 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+        PostDown = iptables -t nat -D POSTROUTING -o ens37 -j MASQUERADE; \
+           iptables -D FORWARD -i wg0 -o ens37 -j ACCEPT; \
+           iptables -D FORWARD -i ens37 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
 
         PostDown = sysctl -w net.ipv4.ip_forward=0
 
