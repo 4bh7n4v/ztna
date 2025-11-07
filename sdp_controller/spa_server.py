@@ -20,7 +20,7 @@ import ipaddress
 import add_wg_peer
 import wireguard
 import subprocess
-from Gateway_SSL import send_resync, send_remove_peer
+import Gateway_SSL 
 
 class SPAServer:
     def __init__(self, config_file='server_config.json', verbose=False, port=62201, daemon=False):
@@ -48,10 +48,12 @@ class SPAServer:
         # Track active Commuincation
         self.connection = False
         self.Enabled = False
+        self.violation = True
         # Track received SPA packets
         self.spa_requests = {}
         self.recently_timed_out = {}
         self._lock = threading.Lock()
+    
 
     def load_config(self, config_file): 
         try:
@@ -63,6 +65,30 @@ class SPAServer:
         except json.JSONDecodeError as e:
             print(f"Error: Invalid JSON in configuration file {config_file}: {e}")
             sys.exit(1)
+
+    def store_access_event(self, packet):
+
+        log_file = "Client_History.json"
+
+        # Load existing events
+        try:
+            if os.path.exists(log_file):
+                with open(log_file, "r") as f:
+                    data = json.load(f)
+            else:
+                data = []
+        except:
+            data = []
+
+        # Append new event
+        data.append(packet)
+
+        # Save back to file
+        with open(log_file, "w") as f:
+            json.dump(data, f, indent=4)
+
+        logging.info(f"Stored event: {packet}")
+
 
     def setup_logging(self):
         log_format = '%(asctime)s - %(levelname)s - %(message)s'
@@ -189,6 +215,11 @@ class SPAServer:
                 del self.recently_timed_out[peer_ip]
 
         try:
+
+            # Inside handle_packet(), before reply(...)
+            
+
+
             if self.verbose:
                 print(f"\nReceived packet from {addr[0]}:{addr[1]}")
                 print(f"Raw data (base64): {base64.b64encode(data).decode()}")
@@ -324,6 +355,15 @@ class SPAServer:
                     add_wg_peer.Copy_inference(gateway)
 
                 add_wg_peer.add_peer(self,vpn_ip, key,gateway)
+                packet = {
+                    "action":"Request_Access",
+                    "source_ip": vpn_ip,
+                    "resource_ip": resource_ip,
+                    "port": packet_data["access_port"],
+                    "protocol": packet_data["protocol"],
+                }
+                Gateway_SSL.Request_Permission("Request_Access",vpn_ip,add_wg_peer.Resource_Resolver(resource_ip),access_port,packet_data["protocol"])
+                self.store_access_event(packet)
 
 
                 gateway['wireguard_public_key'] = str(wireguard.get_public_key())
@@ -396,6 +436,7 @@ class SPAServer:
         except Exception as e:
             logging.error(f"Error sending reply to {addr[0]}: {str(e)}")
 
+
     def _peer_cleanup_thread(self):
         logging.info("Peer cleanup thread started.")
         PEER_TIMEOUT = self.config.get('peer_timeout', 120)
@@ -422,7 +463,7 @@ class SPAServer:
                         logging.warning(f"Peer '{key}' has timed out. Cleaning up...")
                         try:
                             if peer_pubkey:
-                                response = send_remove_peer(peer_pubkey)
+                                response = Gateway_SSL.send_remove_peer(peer_pubkey)
                                 logging.info(f"Gateway response for '{key}': {response.strip()}")
                             else:
                                 logging.warning(f"No public key found for peer '{key}' — skipping removal request.")
@@ -433,6 +474,28 @@ class SPAServer:
                         except Exception as e:
                             logging.error(f"Failed to contact gateway for '{key}': {e}")
 
+                    if age > PEER_TIMEOUT:
+                        try:
+                            with open("Client_History.json", "r") as f:
+                                client_history = json.load(f)
+                        except FileNotFoundError:
+                            print("[!] Client_History.json not found")
+                            client_history = []
+                        except Exception as e:
+                            logging.error(f"Failed to read Client_History.json: {e}")
+                            client_history = []
+
+                        for entry in client_history:
+                            try:
+                                Gateway_SSL.Request_Permission(
+                                    "Remove_Access",
+                                    entry.get("source_ip"),
+                                    entry.get("resource_ip"),
+                                    entry.get("port"),
+                                    entry.get("protocol")  # make sure JSON uses "protocol", not "portocol"
+                                )
+                            except Exception as e:
+                                logging.error(f"Failed to contact gateway for {entry}: {e}")
 
             # Phase 2: Actually remove timed-out peers
             if peers_to_remove:
@@ -473,7 +536,7 @@ class SPAServer:
                                 # ✅ After all timed-out peers are cleaned up, resync Gateway
                 try:
                     logging.info("Triggering Gateway WireGuard resync...")
-                    response = send_resync()
+                    response = Gateway_SSL.send_resync()
                     logging.info(f"Gateway resync response: {response.strip()}")
                 except Exception as e:
                     logging.error(f"Failed to trigger Gateway resync: {e}")

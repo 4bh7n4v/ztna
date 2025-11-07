@@ -19,8 +19,8 @@ def load_gateways(json_path="sdp_gateway_details.json"):
 
 def resolve_gateway(resource_ip, gateways):
     resource_to_gateway_id = {
-        "resource-1": "gw-01",
-        "resource-2": "gw-02"
+        "resource1.local": "gw-01",
+        "resource2.local": "gw-02"
     }
 
     gateway_id = resource_to_gateway_id.get(resource_ip)
@@ -36,10 +36,22 @@ def resolve_gateway(resource_ip, gateways):
 
     return None
 
+def Resource_Resolver(resource_id):
+    DNS = {
+        "resource1.local": "192.168.1.101",
+        "resource2.local": "192.168.2.101"
+    }
+    resource_ip = DNS.get(resource_id)
+    if not resource_ip:
+        print(f"Invalid resource identifier: {resource_ip}")
+        return
+    
+    return resource_ip
+
 def update_gateway(resource_ip, gateways, updated_gateway, file_path="sdp_gateway_details.json"):
     gateway_id = {
-        "resource-1": "gw-01",
-        "resource-2": "gw-02"
+        "resource1.local": "gw-01",
+        "resource2.local": "gw-02"
     }.get(resource_ip)
 
     if not gateway_id:
@@ -192,20 +204,13 @@ def update_wg0_conf(private_key, address, port, conf_path="/home/uneedituh/ztna/
         Address = {address}
         ListenPort = {port}
 
-        PostUp = sysctl -w net.ipv4.ip_forward=1
-
-        PostUp = iptables -t nat -A POSTROUTING -o ens37 -j MASQUERADE; \
-           iptables -A FORWARD -i wg0 -o ens37 -j ACCEPT; \
-           iptables -A FORWARD -i ens37 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-        PostDown = iptables -t nat -D POSTROUTING -o ens37 -j MASQUERADE; \
-           iptables -D FORWARD -i wg0 -o ens37 -j ACCEPT; \
-           iptables -D FORWARD -i ens37 -o wg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-        PostDown = sysctl -w net.ipv4.ip_forward=0
+        #Wiregaurd handshake 
 
             
         """
+    
+        # Allow WireGuard handshake only
+
 
     try:
         with open(conf_path, 'w') as f:

@@ -1,9 +1,9 @@
 {
-    "server_ip": "10.0.1.4",
+    "server_ip": "controller.local",
     "client_ip": "",
     "server_port": 62201,
-    "access_port": 22,
-    "resource_ip" : "resource-1",
+    "access_port": "22,8080",
+    "resource_ip" : "resource1.local",
     "protocol": "tcp",
     "encryption_key": "your-encryption-key-here",
     "hmac_key": "your-hmac-key-here",

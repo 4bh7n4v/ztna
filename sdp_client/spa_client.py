@@ -17,7 +17,6 @@ import argparse
 import wireguard
 import subprocess
 
-import subprocess, threading, time, os
 
 WG_INTERFACE = "wg0"
 THRESHOLD = 600  # seconds (10 min)
@@ -54,8 +53,34 @@ class SPAClient:
 
         self.interface = interface
         self.monitor_script = "/home/kali/Desktop/ztna/sdp_client/wg_stale_monitor.py"
-        self.stale_timeout = 600
+        self.stale_timeout = 300
 
+    def dns(self,query):
+        try:
+            ip = socket.gethostbyname(query)
+            return ip
+        except socket.gaierror:
+            return None
+
+    def Update_DNS(self,config_file, save=False):
+        """Load JSON, update server_ip using DNS, return updated config.
+       If save=True -> write back to file."""
+    
+        # Load JSON from file
+        with open(config_file) as f:
+            cfg = json.load(f)
+        
+        # Update ONLY server_ip
+        resolved_ip = self.dns(cfg["server_ip"])
+        if resolved_ip:
+            cfg["server_ip"] = resolved_ip
+
+        # Save only if asked
+        if save:
+            with open(config_file, "w") as f:
+                json.dump(cfg, f, indent=4)
+
+        return cfg
 
     def get_client_ip(self): 
         """
@@ -71,7 +96,8 @@ class SPAClient:
     def load_config(self, config_file):
         try:
             with open(config_file, 'r') as f:
-                self.config = json.load(f)
+                # self.config = json.load(f)
+                self.config = self.Update_DNS(config_file)
             if not self.config.get("source_ip"):
                 self.config['source_ip'] = self.get_client_ip() # get client ip using sockets
             self.password = self.config['encryption_key'] # get the encryptionkey from config file

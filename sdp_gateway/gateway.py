@@ -74,6 +74,135 @@ def remove_peer(public_key):
 
         return peer_found
 
+import subprocess
+
+def allow_access(client_ip,resource_ip,port,proto):
+    """
+        sudo iptables -I FORWARD 1 -s <CLIENTVPNIP> -d <RESOURCEIP> -p tcp --dport <PORTBUMBER> -j ACCEPT
+        sudo iptables -A FORWARD -d <CLIENTVPNIP> -s <RESOURCEIP> -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+    """
+
+    try:
+        # 2. ALLOW specific port (insert at top)
+        subprocess.run([
+            "iptables", "-I", "FORWARD", "1",
+            "-s", client_ip,
+            "-d", resource_ip,
+            "-p", proto,
+            "-m" , "multiport",
+            "--dports", str(port),
+            "-j", "ACCEPT"
+        ], check=True)
+        print(f"[OK] ACCEPT rule added for port {port}: {client_ip} -> {resource_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to add ACCEPT {port} rule: {e}")
+
+    try:
+        # 1. DROP all traffic from client -> resource
+        subprocess.run([
+            "iptables", "-I", "FORWARD" , "2",
+            "-s", client_ip,
+            "-d", resource_ip,
+            "-j", "DROP"
+        ], check=True)
+        print(f"[OK] DROP rule added: {client_ip} -> {resource_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to add DROP rule: {e}")
+
+
+    try:
+        # 3. Allow return traffic (RESOURCE -> CLIENT)
+        subprocess.run([
+            "iptables", "-I", "FORWARD", "3",
+            "-d", client_ip,
+            "-s", resource_ip,
+            "-m", "state",
+            "--state", "RELATED,ESTABLISHED",
+            "-j", "ACCEPT"
+        ], check=True)
+        print(f"[OK] Return traffic rule added: {resource_ip} -> {client_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Failed to add return traffic rule: {e}")
+
+
+
+
+def deny_access(client_ip,resource_ip,port,proto):
+    # Insert rule for traffic from client to resource
+    """
+        sudo iptables -D FORWARD -s 10.0.0.1 -d resource.local -p tcp --dport 22 -j ACCEPT 
+    """
+    resource_ip = socket.gethostbyname(resource_ip)
+    try:
+        subprocess.run([
+            "iptables", "-D", "FORWARD",
+            "-s", client_ip,
+            "-d", resource_ip,
+            "-p", proto,
+            "-m" , "multiport",
+            "--dports", str(port),
+            "-j", "ACCEPT"
+        ], check=True)
+
+        print(f"[OK] Deleted ACCEPT rule for port {port}: {client_ip} -> {resource_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Could not delete ACCEPT {port} rule: {e}")
+
+    # 2. Delete return traffic rule
+    try:
+        subprocess.run([
+            "iptables", "-D", "FORWARD",
+            "-d", client_ip,
+            "-s", resource_ip,
+            "-m", "state",
+            "--state", "RELATED,ESTABLISHED",
+            "-j", "ACCEPT"
+        ], check=True)
+
+        print(f"[OK] Deleted return traffic rule: {resource_ip} -> {client_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Could not delete return traffic rule: {e}")
+
+    # 3. Delete DROP rule (optional)
+    try:
+        subprocess.run([
+            "iptables", "-D", "FORWARD",
+            "-s", client_ip,
+            "-d", resource_ip,
+            "-j", "DROP"
+        ], check=True)
+
+        print(f"[OK] Deleted DROP rule: {client_ip} -> {resource_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Could not delete DROP rule: {e}")
+
+
+def handle_request(cmd):
+    action = cmd["action"]
+    client_ip = cmd["client_vpn_ip"]
+    resource_ip = cmd["resource_ip"]
+    ports = cmd["ports"]         # list of ports
+    proto = cmd.get("protocol")
+
+    #for p in ports:
+    if action == "Request_Access":
+            print("[*] Executing Request Access")
+            allow_access(client_ip, resource_ip, ports, proto)
+        
+    elif action == "Remove_Access":
+            print("[*] Executing Remove Access")
+            deny_access(client_ip, resource_ip, ports, proto)
+        
+    return True
+
+
 # ===== TLS Server Setup =====
 context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
 context.load_cert_chain(certfile="./OpenSSL/gateway.crt", keyfile="./OpenSSL/gateway.key")
@@ -95,7 +224,9 @@ try:
             data = conn.recv(4096)
             command = json.loads(data.decode())
 
-            if command.get("action") == "remove_peer":
+            Request = command.get("action")
+
+            if Request == "remove_peer":
                 success = remove_peer(command["public_key"])
                 if success:
                     conn.send(b"Peer removed")
@@ -104,7 +235,7 @@ try:
                     conn.send(b"Peer not found")
                     print(f"[-] Peer {command['public_key']} not found")
             
-            elif command.get("action") == "resync":
+            elif Request == "resync":
                 success = strip_and_resync()
                 if success:
                     conn.send(b"WireGuard configuration resynced successfully")
@@ -113,6 +244,14 @@ try:
                     conn.send(b"Failed to resync configuration")
                     print("[!] Failed to resync WireGuard configuration.")
 
+            elif Request == "Request_Access" or Request == "Remove_Access":
+                success = handle_request(command)
+                if success:
+                    conn.send(b"Permission Granted Succesfully")
+                    print(f"[*] {Request} Permission Granted Successfully")
+                else:
+                    conn.send(b"Failed to Process Request")
+                    print(f"[!] Failed to Process {Request}")
             else:
                 conn.send(b"Unknown action")
         except Exception as e:

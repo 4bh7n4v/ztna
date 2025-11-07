@@ -1,0 +1,16 @@
+[
+    {
+        "action": "Request_Access",
+        "source_ip": "10.0.0.1",
+        "resource_ip": "resource1.local",
+        "port": "22,8080",
+        "protocol": "tcp"
+    },
+    {
+        "action": "Request_Access",
+        "source_ip": "10.0.0.1",
+        "resource_ip": "resource1.local",
+        "port": "22,8080",
+        "protocol": "tcp"
+    }
+]

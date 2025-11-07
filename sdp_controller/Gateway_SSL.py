@@ -22,7 +22,8 @@ def _send_tls_command(command: dict, retry_delay=5) -> str:
     Retries until success with a delay between attempts.
     """
     # Prompt PEM passphrase once with masked input
-    pem_passphrase = pwinput.pwinput(prompt="Enter PEM passphrase: ", mask="*")
+    #pem_passphrase = pwinput.pwinput(prompt="Enter PEM passphrase: ", mask="*")
+    pem_passphrase = "MyStrongPassword"
 
     while True:
         try:
@@ -50,10 +51,21 @@ def send_resync():
     """Tell the Gateway to perform wg-quick strip + syncconf."""
     return _send_tls_command({"action": "resync"})
 
+def Request_Permission(Permission,client_vpnip,resourceip,port,protocol):
+    return _send_tls_command({
+    "action": Permission,              
+    "client_vpn_ip": client_vpnip,
+    "resource_ip": resourceip,
+    "ports": port,
+    "protocol": protocol
+})
+
+
 # ======= MAIN CLI HANDLER =======
 if __name__ == "__main__":
     if len(sys.argv) < 2:
         print("Usage:\n  python3 Gateway_SSL.py send_remove_peer <public_key>\n  python3 Gateway_SSL.py send_resync")
+        print("export KEY_PASS=MyStrongPassword")
         sys.exit(1)
 
     action = sys.argv[1]
@@ -62,5 +74,7 @@ if __name__ == "__main__":
         print(send_remove_peer(pubkey))
     elif action == "resync":
         print(send_resync())
+    elif action == "Request_Permission":
+        print(Request_Permission())
     else:
         print("Invalid usage.")

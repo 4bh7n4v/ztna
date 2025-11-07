@@ -8,17 +8,16 @@
     "ssh_key_path": "/home/uneedituh/.ssh/id_ed25519.pub",
     "wireguard_conf_path": "/home/uneedituh/ztna/sdp_gateway/wg0.conf",
     "wireguard_interface": "wg0",
-    "wireguard_public_key": "unL3BK9gSkoYK6FESqmpYFZOjNh6hTN/njxRb8s0iQ8=",
+    "wireguard_public_key": "jhS0s4kJp/tjd8z1r7eAoCruQxVbAk4ylMyhy+ATohM=",
     "listen_port": 51820,
     "vpn_subnet": "10.0.0.0/24",
     "vpn_ip_pool": [
-        "10.0.0.1",
-        "10.0.0.2",
-        "10.0.0.3",
-        "10.0.0.4"
+      "10.0.0.3",
+      "10.0.0.4"
     ],
-    "status": "online"
-    },
+    "status": "online",
+    "gateway_vpn_ip": "10.0.0.2"
+  },
   {
     "gateway_id": "gw-02",
     "name": "sdp Gateway 2",
