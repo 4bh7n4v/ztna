@@ -137,6 +137,41 @@ def deny_access(client_ip,resource_ip,port,proto):
         sudo iptables -D FORWARD -s 10.0.0.1 -d resource.local -p tcp --dport 22 -j ACCEPT 
     """
     resource_ip = socket.gethostbyname(resource_ip)
+
+    # 3. Delete return traffic rule
+    try:
+        subprocess.run([
+            "iptables", "-D", "FORWARD",
+            "-d", client_ip,
+            "-s", resource_ip,
+            "-m", "state",
+            "--state", "RELATED,ESTABLISHED",
+            "-j", "ACCEPT"
+        ], check=True)
+
+        print(f"[OK] Deleted return traffic rule: {resource_ip} -> {client_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Could not delete return traffic rule: {e}")
+
+
+    # 2. Delete DROP rule (optional)
+    try:
+        subprocess.run([
+            "iptables", "-D", "FORWARD",
+            "-s", client_ip,
+            "-d", resource_ip,
+            "-j", "DROP"
+        ], check=True)
+
+        print(f"[OK] Deleted DROP rule: {client_ip} -> {resource_ip}")
+
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Could not delete DROP rule: {e}")
+
+
+
+    # 1. Delete the Certain port Communincation
     try:
         subprocess.run([
             "iptables", "-D", "FORWARD",
@@ -153,35 +188,6 @@ def deny_access(client_ip,resource_ip,port,proto):
     except subprocess.CalledProcessError as e:
         print(f"[ERROR] Could not delete ACCEPT {port} rule: {e}")
 
-    # 2. Delete return traffic rule
-    try:
-        subprocess.run([
-            "iptables", "-D", "FORWARD",
-            "-d", client_ip,
-            "-s", resource_ip,
-            "-m", "state",
-            "--state", "RELATED,ESTABLISHED",
-            "-j", "ACCEPT"
-        ], check=True)
-
-        print(f"[OK] Deleted return traffic rule: {resource_ip} -> {client_ip}")
-
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Could not delete return traffic rule: {e}")
-
-    # 3. Delete DROP rule (optional)
-    try:
-        subprocess.run([
-            "iptables", "-D", "FORWARD",
-            "-s", client_ip,
-            "-d", resource_ip,
-            "-j", "DROP"
-        ], check=True)
-
-        print(f"[OK] Deleted DROP rule: {client_ip} -> {resource_ip}")
-
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Could not delete DROP rule: {e}")
 
 
 def handle_request(cmd):

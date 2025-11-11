@@ -66,11 +66,45 @@ class SPAServer:
             print(f"Error: Invalid JSON in configuration file {config_file}: {e}")
             sys.exit(1)
 
-    def store_access_event(self, packet):
+    def is_duplicate(self,new_object: dict, file_path: str = "Client_History.json") -> bool:
+        existing_data = []
+        
+        if not os.path.exists(file_path):
+            return False
+        
+        try:
+            with open(file_path, 'r') as f:
+                file_content = f.read().strip()
+                if file_content:
+                    existing_data = json.loads(file_content)
+        except json.JSONDecodeError:
+            return False 
+        
+        if not isinstance(existing_data, list):
+            return False
 
+        try:
+            new_string = json.dumps(new_object, sort_keys=True)
+        except TypeError:
+            return False 
+
+        unique_set = set()
+        for item in existing_data:
+            try:
+                unique_set.add(json.dumps(item, sort_keys=True))
+            except TypeError:
+                continue 
+
+        return new_string in unique_set
+
+
+    def store_access_event(self, packet):
         log_file = "Client_History.json"
 
-        # Load existing events
+        if self.is_duplicate(packet, log_file):
+            logging.info("[!] Duplicate event detected. Not storing.")
+            return
+
         try:
             if os.path.exists(log_file):
                 with open(log_file, "r") as f:
@@ -80,14 +114,13 @@ class SPAServer:
         except:
             data = []
 
-        # Append new event
         data.append(packet)
 
-        # Save back to file
         with open(log_file, "w") as f:
             json.dump(data, f, indent=4)
 
-        logging.info(f"Stored event: {packet}")
+        logging.info(f"[+] Stored event: {packet}")
+
 
 
     def setup_logging(self):
@@ -473,7 +506,8 @@ class SPAServer:
 
                         except Exception as e:
                             logging.error(f"Failed to contact gateway for '{key}': {e}")
-
+                    port = key.split(":")[1]
+                    proto = key.split(":")[2]
                     if age > PEER_TIMEOUT:
                         try:
                             with open("Client_History.json", "r") as f:
@@ -486,19 +520,21 @@ class SPAServer:
                             client_history = []
 
                         for entry in client_history:
-                            try:
-                                Gateway_SSL.Request_Permission(
-                                    "Remove_Access",
-                                    entry.get("source_ip"),
-                                    entry.get("resource_ip"),
-                                    entry.get("port"),
-                                    entry.get("protocol")  # make sure JSON uses "protocol", not "portocol"
-                                )
-                            except Exception as e:
-                                logging.error(f"Failed to contact gateway for {entry}: {e}")
+                            if(port == entry.get("port") and proto == entry.get("protocol")):
+                                try:
+                                    Gateway_SSL.Request_Permission(
+                                        "Remove_Access",
+                                        entry.get("source_ip"),
+                                        entry.get("resource_ip"),
+                                        entry.get("port"),
+                                        entry.get("protocol")  # make sure JSON uses "protocol", not "portocol"
+                                    )
+                                except Exception as e:
+                                    logging.error(f"Failed to contact gateway for {entry}: {e}")
+                            
 
             # Phase 2: Actually remove timed-out peers
-            if peers_to_remove:
+            if peers_to_remove: 
                 with self._lock:
                     for key in peers_to_remove:
                         peer_info = self.spa_requests.pop(key, None)
