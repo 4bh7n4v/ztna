@@ -5,15 +5,16 @@ import socket
 import json
 import sys
 import pwinput
+import logging
 import time
 
 # ======= CONFIG =======
-GATEWAY_IP = "10.0.1.6"
+GATEWAY_IP = "10.0.0.3"
 GATEWAY_PORT = 4443
 SERVER_CN = "gateway.local"
-CA_FILE = "/home/uneedituh/ztna/sdp_controller/OpenSSL/ca.crt"
-CLIENT_CERT = "/home/uneedituh/ztna/sdp_controller/OpenSSL/controller.crt"
-CLIENT_KEY = "/home/uneedituh/ztna/sdp_controller/OpenSSL/controller.key"
+CA_FILE = "/tmp/CA_workspace/ca.crt"
+CLIENT_CERT = "/tmp/PDP_workspace/pdp.crt"
+CLIENT_KEY = "/tmp/PDP_workspace/pdp.key"
 
 # ======= COMMON FUNCTION =======
 def _send_tls_command(command: dict, retry_delay=5) -> str:
@@ -39,10 +40,24 @@ def _send_tls_command(command: dict, retry_delay=5) -> str:
                     return response  # Success! Exit loop
 
         except (ssl.SSLError, socket.error, ConnectionRefusedError) as e:
-            print(f"[!] TLS command failed: {e}. Retrying in {retry_delay}s...")
+            logging.warning(f"[!] TLS command failed: {e}. Retrying in {retry_delay}s...")
             time.sleep(retry_delay)
 
 # ======= PUBLIC FUNCTIONS =======
+def Generate_Wiregaurd(VPN_IP,Port):
+    """Tell the Gateway to Generate the Wireguard keys"""
+
+    return _send_tls_command({"action" : "Generate_keys","Address" : VPN_IP,"ListenPort":Port})
+
+def Refresh_Gateway_Firewall():
+    """Tells the Gateway to Refresh Firewall Rules"""
+    return _send_tls_command({"action" : "Refresh_Rules"})
+
+def add_peer(client_vpn_ip, client_pub_key):
+    """Tell the Gateway to add the peer information"""
+
+    return _send_tls_command({"action": "load_Peer", "public_key": client_pub_key, "Vpn_ip":client_vpn_ip})
+
 def send_remove_peer(public_key: str):
     """Tell the Gateway to remove a peer by public key."""
     return _send_tls_command({"action": "remove_peer", "public_key": public_key})
@@ -60,21 +75,35 @@ def Request_Permission(Permission,client_vpnip,resourceip,port,protocol):
     "protocol": protocol
 })
 
+def Start_Wireguard(Permission):
+    return _send_tls_command({
+        "action": Permission
+    })
+
+
 
 # ======= MAIN CLI HANDLER =======
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage:\n  python3 Gateway_SSL.py send_remove_peer <public_key>\n  python3 Gateway_SSL.py send_resync")
-        print("export KEY_PASS=MyStrongPassword")
+        logging.info("Usage:")
+        logging.info("  python3 Gateway_SSL.py remove_peer <public_key>")
+        logging.info("  python3 Gateway_SSL.py Start")
+        logging.info("  python3 Gateway_SSL.py resync")
+        logging.info("  python3 Gateway_SSL.py Request_Permission <ALLOW|DENY> <client_vpn_ip> <resource_ip> <port> <protocol>")
         sys.exit(1)
+
 
     action = sys.argv[1]
     if action == "remove_peer" and len(sys.argv) == 3:
         pubkey = sys.argv[2]
-        print(send_remove_peer(pubkey))
+        logging.info(send_remove_peer(pubkey))
+    elif action == "Start":
+        logging.info(Start_Wireguard("Start"))
+    elif action == "load_Peer":
+        logging.info(add_peer())
     elif action == "resync":
-        print(send_resync())
+        logging.info(send_resync())
     elif action == "Request_Permission":
-        print(Request_Permission())
+        logging.info(Request_Permission())
     else:
-        print("Invalid usage.")
+        logging.info("Invalid usage.")

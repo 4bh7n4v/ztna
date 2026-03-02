@@ -8,6 +8,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.backends import default_backend
+from IP_Address_Manager import *
 import hmac
 import hashlib
 import time
@@ -21,6 +22,8 @@ import add_wg_peer
 import wireguard
 import subprocess
 import Gateway_SSL 
+import requests
+
 
 class SPAServer:
     def __init__(self, config_file='server_config.json', verbose=False, port=62201, daemon=False):
@@ -60,10 +63,10 @@ class SPAServer:
             with open(config_file, 'r') as f:
                 self.config = json.load(f)
         except FileNotFoundError:
-            print(f"Error: Configuration file {config_file} not found")
+            logging.warning(f"Error: Configuration file {config_file} not found")
             sys.exit(1)
         except json.JSONDecodeError as e:
-            print(f"Error: Invalid JSON in configuration file {config_file}: {e}")
+            logging.warning(f"Error: Invalid JSON in configuration file {config_file}: {e}")
             sys.exit(1)
 
     def is_duplicate(self,new_object: dict, file_path: str = "Client_History.json") -> bool:
@@ -102,7 +105,7 @@ class SPAServer:
         log_file = "Client_History.json"
 
         if self.is_duplicate(packet, log_file):
-            logging.info("[!] Duplicate event detected. Not storing.")
+            logging.warning("[!] Duplicate event detected. Not storing.")
             return
 
         try:
@@ -135,7 +138,7 @@ class SPAServer:
                 file_handler.setFormatter(logging.Formatter(log_format))
                 handlers.append(file_handler)
             except Exception as e:
-                print(f"Failed to set up file logger: {e}")
+                logging.warning(f"Failed to set up file logger: {e}")
 
         # Add console handler if not daemon, or if verbose
         if self.verbose or not self.daemon:
@@ -153,7 +156,7 @@ class SPAServer:
     def setup_crypto(self):
         # Derive AES key from encryption key
         if 'encryption_key' not in self.config:
-            print("Error: encryption_key not found in configuration")
+            logging.warning("Error: encryption_key not found in configuration")
             sys.exit(1)
             
         password = self.config['encryption_key']
@@ -198,7 +201,15 @@ class SPAServer:
         received_hmac = data[-32:]
         
         return json_data, received_hmac
-    
+
+    def generate_pool(self, subnet, gateway_ip):
+        net = ipaddress.ip_network(subnet)
+        return [
+            str(ip)
+            for ip in net.hosts()
+                if str(ip) != gateway_ip
+        ]
+
     def is_ip_allowed(self, ip):
         if 'allowed_ips' not in self.config:
             logging.warning("No allowed_ips configured - denying all access")
@@ -213,7 +224,268 @@ class SPAServer:
             return False
         except ValueError:
             return False
+
+    def allocate_vpn_ip(self, device_id, gateway_id, vpn_subnet, lease_duration=600):
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        now = time.time()
+        expiry = now + lease_duration
+
+        # 1️⃣ Reuse existing active lease
+        cursor.execute("""
+            SELECT vpn_ip
+            FROM vpn_leases
+            WHERE device_id=? AND status='active' AND lease_expiry > ?
+        """, (device_id, now))
+
+        row = cursor.fetchone()
+        if row:
+            conn.close()
+            logging.info(f"[IPAM] Reusing existing VPN IP {row[0]}")
+            return row[0]
+
+        # 2️⃣ Get used IPs
+        cursor.execute("""
+            SELECT vpn_ip
+            FROM vpn_leases
+            WHERE gateway_id=? AND status='active' AND lease_expiry > ?
+        """, (gateway_id, now))
+
+        used_ips = set(row[0] for row in cursor.execute(
+            "SELECT vpn_ip FROM vpn_leases WHERE status='active'"
+        ))
+
+        # 3️⃣ Define subnet
+        net = ipaddress.ip_network(vpn_subnet)
+
+        # Get gateway VPN IP (do not assign to client)
+        cursor.execute("""
+            SELECT gateway_vpn_ip FROM gateways WHERE gateway_id=?
+        """, (gateway_id,))
+        row = cursor.fetchone()
+        gateway_ip = row[0] if row else None
+
+        # 4️⃣ Iterate through subnet
+        for ip in net.hosts():
+            ip_str = str(ip)
+
+            if gateway_ip and ip_str == gateway_ip:
+                continue
+
+            if ip_str not in used_ips:
+                try:
+                    cursor.execute("""
+                        INSERT INTO vpn_leases
+                        (device_id, gateway_id, vpn_ip, status,
+                        lease_start, last_seen, lease_expiry)
+                        VALUES (?, ?, ?, 'active', ?, ?, ?)
+                    """, (device_id, gateway_id, ip_str, now, now, expiry))
+
+                    conn.commit()
+                    conn.close()
+
+                    logging.info(f"[IPAM] Allocated {ip_str} to {device_id}")
+                    return ip_str
+
+                except sqlite3.IntegrityError as e:
+                    logging.warning(f"[IPAM] IntegrityError for {ip_str}: {e}")
+                    continue
+
+        conn.close()
+        raise Exception("VPN IP pool exhausted")
+
+    # def revoke_lease(self, gateway, peer):
+    #     vpn_ip = peer["vpn_ip"]
+
+    #     logging.warning(f"[IPAM] Revoking lease for {vpn_ip}")
+
+    #     # Remove WireGuard peer
+    #     add_wg_peer.remove_peer(peer["client_id"])
+
+    #     # Return IP to pool
+    #     gateway["vpn_ip_pool"].append(vpn_ip)
+
+    #     peer["status"] = "revoked"
+
+    # def verification_monitor(self):
+    #     while self.running:
+    #         time.sleep(300)
+
+    #         gateways = add_wg_peer.load_gateways()
+
+    #         for gateway in gateways:
+    #             changed = False
+
+    #             for peer in gateway.get("allocated_peers", []):
+    #                 if peer.get("status") != "active":
+    #                     continue
+
+    #                 client_id = peer["client_id"]
+
+    #                 # Replace this with real verification logic
+    #                 if self.verify_client(client_id):
+    #                     self.renew_lease(gateway, client_id)
+    #                     changed = True
+    #                 else:
+    #                     self.revoke_lease(gateway, peer)
+    #                     changed = True
+
+    #             if changed:
+    #                 add_wg_peer.update_gateway(
+    #                     gateway["resource_ip"],
+    #                     gateways,
+    #                     gateway
+    #                 )
+
+
+    # def renew_lease(self, gateway, client_id):
+    #     now = time.time()
+
+    #     for peer in gateway.get("allocated_peers", []):
+    #         if peer["client_id"] == client_id and peer["status"] == "active":
+    #             peer["expires_at"] = now + peer["lease_duration"]
+    #             peer["last_verified"] = now
+    #             logging.info(f"[IPAM] Lease renewed for {peer['vpn_ip']}")
+    #             return True
+
+    #     return False
+
+    # def lease_monitor(self):
+    #     while self.running:
+    #         time.sleep(30)
+
+    #         gateways = add_wg_peer.load_gateways()
+
+    #         for gateway in gateways:
+    #             changed = False
+    #             for peer in gateway.get("allocated_peers", []):
+    #                 if peer["status"] == "active" and time.time() > peer["expires_at"]:
+    #                     self.revoke_lease(gateway, peer)
+    #                     changed = True
+
+    #             if changed:
+    #                 add_wg_peer.update_gateway(
+    #                     gateway["resource_ip"],
+    #                     gateways,
+    #                     gateway
+    #                 )
+    def ensure_device_exists(device_id, public_key, public_ip):
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            INSERT OR IGNORE INTO devices
+            (device_id, public_key, public_ip, status)
+            VALUES (?, ?, ?, 'online')
+        """, (device_id, public_key, public_ip))
+
+        conn.commit()
+        conn.close()
+
+    def lease_monitor(self):
+        while self.running:
+            time.sleep(30)
+
+            conn = get_connection()
+            cursor = conn.cursor()
+
+            now = time.time()
+
+            cursor.execute("""
+                SELECT lease_id, device_id, vpn_ip
+                FROM vpn_leases
+                WHERE status='active' AND lease_expiry < ?
+            """, (now,))
+
+            expired = cursor.fetchall()
+
+            for lease_id, device_id, vpn_ip in expired:
+                logging.warning(f"[IPAM] Lease expired for {vpn_ip}")
+
+                # Remove WireGuard peer
+                try:
+                    Gateway_SSL.send_remove_peer(device_id)
+                except Exception as e:
+                    logging.error(f"Failed to remove peer {device_id}: {e}")
+
+                # Mark lease expired
+                cursor.execute("""
+                    DELETE FROM vpn_leases
+                    WHERE lease_id=?
+                """, (lease_id,))
+
+            conn.commit()
+            conn.close()
     
+    def revoke_lease(self, device_id):
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT vpn_ip FROM vpn_leases
+            WHERE device_id=? AND status='active'
+        """, (device_id,))
+
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return
+
+        vpn_ip = row[0]
+
+        try:
+            Gateway_SSL.send_remove_peer(device_id)
+        except:
+            pass
+
+        cursor.execute("""
+            UPDATE vpn_leases
+            SET status='revoked'
+            WHERE device_id=?
+        """, (device_id,))
+
+        conn.commit()
+        conn.close()
+
+        logging.warning(f"[IPAM] Lease revoked for {vpn_ip}")
+
+    def sync_gateways_to_db(self):
+        gateways = add_wg_peer.load_gateways()
+
+        conn = get_connection()
+        cursor = conn.cursor()
+
+        for gateway in gateways:
+            cursor.execute("""
+                SELECT gateway_id FROM gateways WHERE gateway_id=?
+            """, (gateway["gateway_id"],))
+
+            if not cursor.fetchone():
+                cursor.execute("""
+                    INSERT INTO gateways (
+                        gateway_id,
+                        name,
+                        vpn_subnet,
+                        gateway_vpn_ip,
+                        wireguard_interface,
+                        listen_port,
+                        status
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'online')
+                """, (
+                    gateway["gateway_id"],
+                    gateway.get("name", "Gateway"),
+                    gateway["vpn_subnet"],
+                    gateway.get("gateway_vpn_ip", ""),
+                    gateway.get("wireguard_interface", "wg0"),
+                    gateway.get("listen_port", 51820)
+                ))
+
+        conn.commit()
+        conn.close()
+
     def is_keepalive_packet(self, packet_data):
         """
         Determine if this is a keepalive packet based on content or timing
@@ -249,20 +521,17 @@ class SPAServer:
 
         try:
 
-            # Inside handle_packet(), before reply(...)
-            
-
 
             if self.verbose:
-                print(f"\nReceived packet from {addr[0]}:{addr[1]}")
-                print(f"Raw data (base64): {base64.b64encode(data).decode()}")
+                logging.info(f"\nReceived packet from {addr[0]}:{addr[1]}")
+                logging.info(f"Raw data (base64): {base64.b64encode(data).decode()}")
             
             # Decrypt the packet
             decrypted, received_hmac = self.decrypt_packet(data)
             
             if self.verbose:
-                print(f"Decrypted data: {decrypted}")
-                print(f"HMAC from packet: {received_hmac.hex()}")
+                logging.info(f"Decrypted data: {decrypted}")
+                logging.info(f"HMAC from packet: {received_hmac.hex()}")
             
             # Verify HMAC
             if not self.verify_hmac(decrypted, received_hmac):
@@ -274,8 +543,8 @@ class SPAServer:
             packet_data = json.loads(decrypted)
             
             if self.verbose:
-                print("\nPacket contents:")
-                pprint.pprint(packet_data)
+                logging.info("\nPacket contents:")
+                logging.info(pprint.pformat(packet_data))
             
             # Check if source IP is allowed
             source_ip = packet_data.get('source_ip')
@@ -358,23 +627,103 @@ class SPAServer:
                 
             if key:
                 # Extract resource IP from the SPA packet data
-                resource_ip = packet_data.get('resource_ip')
-                gateways = add_wg_peer.load_gateways() # pass in the JSON file if you are using some other name other than sdp_gateway_details.json
-                gateway = add_wg_peer.resolve_gateway(resource_ip, gateways)
-                vpn_ip = gateway["vpn_ip_pool"][0]
-                del gateway["vpn_ip_pool"][0]
+                resource_id = packet_data.get('resource_ip')
+                # gateways = add_wg_peer.load_gateways() # pass in the JSON file if you are using some other name other than sdp_gateway_details.json
+                # gateway = add_wg_peer.resolve_gateway(resource_ip, gateways)
+                # vpn_ip = gateway["vpn_ip_pool"][0]
+                # del gateway["vpn_ip_pool"][0]
 
+                # if not gateway.get("gateway_vpn_ip"):
+                #     gw_vpn_ip = gateway["vpn_ip_pool"][0]
+                #     del gateway["vpn_ip_pool"][0]
+                #     gateway['gateway_vpn_ip'] = gw_vpn_ip
+                # else:
+                #     gw_vpn_ip = gateway['gateway_vpn_ip']
+
+                # ---------------- SAFE ONE-PHASE IP ALLOCATION ---------------- #
+
+                gateways = add_wg_peer.load_gateways()
+                gateway = add_wg_peer.resolve_gateway(resource_id, gateways)
+
+                client_identifier = key  # WireGuard public key
+
+                with self._lock:
+                    try:
+                        # 1️⃣ Ensure device exists in DB
+                        conn = get_connection()
+                        cursor = conn.cursor()
+
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO devices
+                            (device_id, public_key, public_ip, status)
+                            VALUES (?, ?, ?, 'online')
+                        """, (client_identifier, client_identifier, addr[0]))
+
+                        conn.commit()
+                        conn.close()
+
+                        # 2️⃣ Allocate VPN IP
+                        vpn_ip = self.allocate_vpn_ip(
+                            device_id=client_identifier,
+                            gateway_id=gateway["gateway_id"],
+                            vpn_subnet=gateway["vpn_subnet"],
+                            lease_duration=600
+                        )
+
+                    except Exception as e:
+                        logging.error(f"[IPAM] {str(e)}")
+
+                        error_response = json.dumps({
+                            "status": "error",
+                            "message": str(e)
+                        }).encode()
+
+                        self.socket.sendto(error_response, addr)
+                        return
+
+                # Persist immediately after allocation
+                add_wg_peer.update_gateway(resource_id, gateways, gateway)
+
+                    # Allocate gateway VPN IP only once
+                    # if not gateway.get("vpn_ip_pool"):
+                    #     logging.critical("[IPAM] VPN IP POOL EXHAUSTED - Access Denied")
+                        
+                    #     error_response = json.dumps({
+                    #         "status": "error",
+                    #         "message": "VPN IP pool exhausted"
+                    #     }).encode()
+
+                    #     self.socket.sendto(error_response, addr)
+                    #     return
+
+                    #     gw_vpn_ip = gateway["vpn_ip_pool"].pop(0)
+                    #     gateway["gateway_vpn_ip"] = gw_vpn_ip
+                    #     logging.info(f"[IPAM] Gateway VPN IP assigned: {gw_vpn_ip}")
+                    # else:
+                    #     gw_vpn_ip = gateway["gateway_vpn_ip"]
+
+                    # Allocate gateway VPN IP only once
                 if not gateway.get("gateway_vpn_ip"):
-                    gw_vpn_ip = gateway["vpn_ip_pool"][0]
-                    del gateway["vpn_ip_pool"][0]
-                    gateway['gateway_vpn_ip'] = gw_vpn_ip
+
+                    if not gateway.get("vpn_ip_pool"):
+                        logging.critical("[IPAM] VPN IP POOL EXHAUSTED - Access Denied")
+                        error_response = json.dumps({
+                            "status": "error",
+                            "message": "VPN IP pool exhausted"
+                        }).encode()
+                        self.socket.sendto(error_response, addr)
+                        return
+                    gw_vpn_ip = gateway["vpn_ip_pool"].pop(0)
+                    gateway["gateway_vpn_ip"] = gw_vpn_ip
+                    logging.info(f"[IPAM] Gateway VPN IP assigned: {gw_vpn_ip}")
                 else:
-                    gw_vpn_ip = gateway['gateway_vpn_ip']
+                    gw_vpn_ip = gateway["gateway_vpn_ip"]
+
+                # Persist changes immediately
+                add_wg_peer.update_gateway(resource_id, gateways, gateway)
 
                 client_ip = addr      # The peer’s public/external IP
                 peer_pubkey = key         # WireGuard public key received
-
-
 
                 if(self.verbose):
                     logging.info(f"Stored peer mapping: {client_ip} -> {peer_pubkey}")
@@ -384,23 +733,28 @@ class SPAServer:
                 
                 # Add peer to WireGuard
                 if not self.connection:
-                    add_wg_peer.update_wg0_conf(wireguard.get_private(),gw_vpn_ip,gateway['listen_port'])
-                    add_wg_peer.Copy_inference(gateway)
+                    data = json.loads(Gateway_SSL.Generate_Wiregaurd(gw_vpn_ip,gateway['listen_port']))
+                    Gateway_SSL.Start_Wireguard("Start")
+                    
 
-                add_wg_peer.add_peer(self,vpn_ip, key,gateway)
+                add_wg_peer.add_peer(self,vpn_ip,key,gateway)
                 packet = {
                     "action":"Request_Access",
                     "source_ip": vpn_ip,
-                    "resource_ip": resource_ip,
+                    "resource_ip": resource_id,
                     "port": packet_data["access_port"],
                     "protocol": packet_data["protocol"],
                 }
-                Gateway_SSL.Request_Permission("Request_Access",vpn_ip,add_wg_peer.Resource_Resolver(resource_ip),access_port,packet_data["protocol"])
+                Gateway_SSL.Request_Permission("Request_Access",vpn_ip,add_wg_peer.Resource_Resolver(resource_id),access_port,packet_data["protocol"])
                 self.store_access_event(packet)
+                response = requests.get("http://10.0.0.2:5000/auth/allow")
+                logging.info(response.json())
+                response=requests.get("http://10.0.0.2:5000/auth")
+                logging.info(response.json())
 
 
-                gateway['wireguard_public_key'] = str(wireguard.get_public_key())
-                add_wg_peer.update_gateway(resource_ip,gateways,gateway)
+                gateway['wireguard_public_key'] = data.get("public_key")
+                add_wg_peer.update_gateway(resource_id,gateways,gateway)
                 # Prepare gateway details to send to client
                 request_key = f"{addr[0]}:{packet_data.get('access_port')}:{packet_data.get('protocol')}"
                 with self._lock:    
@@ -457,7 +811,7 @@ class SPAServer:
                 if is_keepalive and self.connection:
                     self.socket.sendto('SPA Keepalive acknowledged'.encode(), addr)
                     if self.verbose:
-                        print(f"Keepalive acknowledged for {addr[0]}")
+                        logging.info(f"Keepalive acknowledged for {addr[0]}")
                 elif not self.connection:
                     self.socket.sendto('SPA Verification successful'.encode(), addr)
                     self.receive_key(addr, packet_data)
@@ -491,7 +845,7 @@ class SPAServer:
                     peer_pubkey = details.get('public_key')
                     age = now - timestamp
                     logging.debug(f"Checking peer '{key}' (pubkey={peer_pubkey}) — age {int(age)}s / timeout {PEER_TIMEOUT}s")
-#chnaged here
+
                     if age > PEER_TIMEOUT:
                         logging.warning(f"Peer '{key}' has timed out. Cleaning up...")
                         try:
@@ -506,14 +860,16 @@ class SPAServer:
 
                         except Exception as e:
                             logging.error(f"Failed to contact gateway for '{key}': {e}")
+                            
                     port = key.split(":")[1]
                     proto = key.split(":")[2]
+
                     if age > PEER_TIMEOUT:
                         try:
                             with open("Client_History.json", "r") as f:
                                 client_history = json.load(f)
                         except FileNotFoundError:
-                            print("[!] Client_History.json not found")
+                            logging.info("[!] Client_History.json not found")
                             client_history = []
                         except Exception as e:
                             logging.error(f"Failed to read Client_History.json: {e}")
@@ -525,7 +881,7 @@ class SPAServer:
                                     Gateway_SSL.Request_Permission(
                                         "Remove_Access",
                                         entry.get("source_ip"),
-                                        entry.get("resource_ip"),
+                                        add_wg_peer.Resource_Resolver(entry.get("resource_ip")),
                                         entry.get("port"),
                                         entry.get("protocol")  # make sure JSON uses "protocol", not "portocol"
                                     )
@@ -545,7 +901,7 @@ class SPAServer:
                             # Optional: Remove peer from WireGuard config
                             try:
                                 if hasattr(add_wg_peer, 'remove_peer'):
-                                    add_wg_peer.remove_peer(pubkey)
+                                    Gateway_SSL.send_remove_peer(pubkey)
                                     logging.info(f"Peer '{key}' also removed from WireGuard config.")
                             except Exception as e:
                                 logging.warning(f"Failed to remove peer '{key}' from WireGuard: {e}")
@@ -562,14 +918,12 @@ class SPAServer:
                 self.recently_timed_out[peer_ip] = time.time()
                 logging.info(f"Marked {peer_ip} as recently timed out.")
 
-
-
                 # Reset connection state if no active peers left
                 with self._lock:
                     if not self.spa_requests:
                         self.connection = False
                         logging.info("All peers cleaned up — connection flag reset to False.")
-                                # ✅ After all timed-out peers are cleaned up, resync Gateway
+                                #  After all timed-out peers are cleaned up, resync Gateway
                 try:
                     logging.info("Triggering Gateway WireGuard resync...")
                     response = Gateway_SSL.send_resync()
@@ -589,10 +943,17 @@ class SPAServer:
             # Set up signal handlers for graceful shutdown
             signal.signal(signal.SIGINT, self.signal_handler)
             signal.signal(signal.SIGTERM, self.signal_handler)
-
+            self.sync_gateways_to_db()
             cleanup_thread = threading.Thread(target=self._peer_cleanup_thread, daemon=True)
+            lease_thread = threading.Thread(target=self.lease_monitor, daemon=True)  
+            # verification_thread = threading.Thread(
+            #     target=self.verification_monitor,
+            #     daemon=True
+            # )
             cleanup_thread.start()
-            
+            lease_thread.start() 
+            Gateway_SSL.Refresh_Gateway_Firewall() 
+            # verification_thread.start()
             while self.running:
                 try:
                     data, addr = self.socket.recvfrom(4096)
@@ -666,7 +1027,7 @@ def main():
                 # Parent process exits
                 sys.exit(0)
         except OSError as e:
-            print(f"Fork failed: {e}")
+            logging.info(f"Fork failed: {e}")
             sys.exit(1)
 
         # Create new session
@@ -686,10 +1047,11 @@ def main():
     server = SPAServer(config_file=args.config, verbose=args.verbose, 
                       port=args.port, daemon=args.daemon)
     try:
+        
         server.start()
     except KeyboardInterrupt:
         server.cleanup()
 
 if __name__ == "__main__":
-   
+    init_db()
     main()
