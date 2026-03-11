@@ -39,7 +39,7 @@ def resolve_gateway(resource_ip, gateways):
 
 def Resource_Resolver(resource_id):
     DNS = {
-        "resource1.local": "192.168.1.101",
+        "resource1.local": "10.0.2.2",
         "resource2.local": "192.168.2.101"
     }
     resource_ip = DNS.get(resource_id)

@@ -60,31 +60,46 @@ def apply_firewall():
         return _err("DNSError", f"Failed to resolve controller.local: {e}")
 
     rules = [
+
         # --- Flush existing rules ---
         ["iptables", "-F"],
         ["iptables", "-X"],
-        ["iptables", "-t", "nat",    "-F"],
+        ["iptables", "-t", "nat", "-F"],
         ["iptables", "-t", "mangle", "-F"],
 
-        # --- Loopback ---
-        ["iptables", "-A", "INPUT",  "-i", "lo", "-j", "ACCEPT"],
+        # --- Enable IP forwarding ---
+        ["sysctl", "-w", "net.ipv4.ip_forward=1"],
+
+        # --- Loopback traffic ---
+        ["iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"],
         ["iptables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
 
-        # --- Established/related ---
-        ["iptables", "-A", "INPUT",  "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
-        ["iptables", "-A", "OUTPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+        # --- Established / Related connections ---
+        ["iptables", "-A", "INPUT",
+        "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
 
-        # --- ICMP only to/from controller.local ---
+        ["iptables", "-A", "OUTPUT",
+        "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+
+        # --- ICMP only with controller ---
+        ["iptables", "-A", "INPUT", "-p", "icmp", "-s", controller_ip, "-j", "ACCEPT"],
         ["iptables", "-A", "OUTPUT", "-p", "icmp", "-d", controller_ip, "-j", "ACCEPT"],
-        ["iptables", "-A", "INPUT",  "-p", "icmp", "-s", controller_ip, "-j", "ACCEPT"],
 
-        # --- TLS: Zero Trust control plane ---
-        ["iptables", "-A", "INPUT", "-p", "tcp", "--dport", "4443",
-         "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
+        # --- TLS control plane ---
+        ["iptables", "-A", "INPUT",
+        "-p", "tcp", "--dport", "4443",
+        "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
 
-        # --- WireGuard: data plane tunnel ---
-        ["iptables", "-A", "INPUT", "-p", "udp", "--dport", "51820",
-         "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
+        # --- WireGuard tunnel ---
+        ["iptables", "-A", "INPUT",
+        "-p", "udp", "--dport", "51820",
+        "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
+
+        # --- Allow gateway to respond to controller TLS ---
+        ["iptables", "-A", "OUTPUT",
+        "-p", "tcp", "-d", controller_ip,
+        "--sport", "4443",
+        "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"],
     ]
 
     drop_policies = [
