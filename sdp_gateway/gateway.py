@@ -60,46 +60,31 @@ def apply_firewall():
         return _err("DNSError", f"Failed to resolve controller.local: {e}")
 
     rules = [
-
         # --- Flush existing rules ---
         ["iptables", "-F"],
         ["iptables", "-X"],
-        ["iptables", "-t", "nat", "-F"],
+        ["iptables", "-t", "nat",    "-F"],
         ["iptables", "-t", "mangle", "-F"],
 
-        # --- Enable IP forwarding ---
-        ["sysctl", "-w", "net.ipv4.ip_forward=1"],
-
-        # --- Loopback traffic ---
-        ["iptables", "-A", "INPUT", "-i", "lo", "-j", "ACCEPT"],
+        # --- Loopback ---
+        ["iptables", "-A", "INPUT",  "-i", "lo", "-j", "ACCEPT"],
         ["iptables", "-A", "OUTPUT", "-o", "lo", "-j", "ACCEPT"],
 
-        # --- Established / Related connections ---
-        ["iptables", "-A", "INPUT",
-        "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+        # --- Established/related ---
+        ["iptables", "-A", "INPUT",  "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
+        ["iptables", "-A", "OUTPUT", "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
 
-        ["iptables", "-A", "OUTPUT",
-        "-m", "conntrack", "--ctstate", "ESTABLISHED,RELATED", "-j", "ACCEPT"],
-
-        # --- ICMP only with controller ---
-        ["iptables", "-A", "INPUT", "-p", "icmp", "-s", controller_ip, "-j", "ACCEPT"],
+        # --- ICMP only to/from controller.local ---
         ["iptables", "-A", "OUTPUT", "-p", "icmp", "-d", controller_ip, "-j", "ACCEPT"],
+        ["iptables", "-A", "INPUT",  "-p", "icmp", "-s", controller_ip, "-j", "ACCEPT"],
 
-        # --- TLS control plane ---
-        ["iptables", "-A", "INPUT",
-        "-p", "tcp", "--dport", "4443",
-        "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
+        # --- TLS: Zero Trust control plane ---
+        ["iptables", "-A", "INPUT", "-p", "tcp", "--dport", "4433",
+         "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
 
-        # --- WireGuard tunnel ---
-        ["iptables", "-A", "INPUT",
-        "-p", "udp", "--dport", "51820",
-        "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
-
-        # --- Allow gateway to respond to controller TLS ---
-        ["iptables", "-A", "OUTPUT",
-        "-p", "tcp", "-d", controller_ip,
-        "--sport", "4443",
-        "-m", "conntrack", "--ctstate", "ESTABLISHED", "-j", "ACCEPT"],
+        # --- WireGuard: data plane tunnel ---
+        ["iptables", "-A", "INPUT", "-p", "udp", "--dport", "51820",
+         "-m", "conntrack", "--ctstate", "NEW", "-j", "ACCEPT"],
     ]
 
     drop_policies = [
@@ -196,11 +181,16 @@ def remove_peer(pub_key):
     except Exception as e:
         logging.exception("[!] Unexpected error removing peer")
         return _err(type(e).__name__, str(e))
-
-def allow_access(client_ip, resource_ip, port, proto):
+def allow_access(client_ip, resource_ip, ports, proto):
     errors = []
 
-    # 1. Allow client → resource on specific port
+    # Normalize ports to comma-separated string for multiport
+    if isinstance(ports, list):
+        ports_str = ",".join(str(p) for p in ports)
+    else:
+        ports_str = str(ports)
+
+    # 1. Allow client → resource on specific port(s)
     try:
         subprocess.run([
             "iptables", "-I", "FORWARD", "1",
@@ -208,12 +198,12 @@ def allow_access(client_ip, resource_ip, port, proto):
             "-d", resource_ip,
             "-p", proto,
             "-m", "multiport",
-            "--dports", str(port),
+            "--dports", ports_str,
             "-j", "ACCEPT"
         ], check=True)
-        logging.info(f"[OK] ACCEPT rule added for port {port}: {client_ip} -> {resource_ip}")
+        logging.info(f"[OK] ACCEPT rule added for ports {ports_str}: {client_ip} -> {resource_ip}")
     except subprocess.CalledProcessError as e:
-        logging.warning(f"[ERROR] Failed to add ACCEPT {port} rule: {e}")
+        logging.warning(f"[ERROR] Failed to add ACCEPT {ports_str} rule: {e}")
         errors.append(f"ACCEPT rule failed: {e}")
 
     # 2. Allow return traffic resource → client
@@ -246,13 +236,17 @@ def allow_access(client_ip, resource_ip, port, proto):
 
     if errors:
         return _err("IPTablesError", "; ".join(errors))
-    return _ok({"message": f"Access granted: {client_ip} -> {resource_ip}:{port}"})
+    return _ok({"message": f"Access granted: {client_ip} -> {resource_ip}:{ports_str}"})
 
-
-def deny_access(client_ip, resource_ip, port, proto):
+def deny_access(client_ip, resource_ip, ports, proto):
     errors = []
-
-    # Delete in reverse order of allow_access
+    
+    # Normalize ports to a comma-separated string for multiport
+    # Handles both single int (22), list ([22, 8080]), and already-formatted string ("22,8080")
+    if isinstance(ports, list):
+        ports_str = ",".join(str(p) for p in ports)
+    else:
+        ports_str = str(ports)
 
     # 3. Delete DROP rule
     try:
@@ -290,17 +284,17 @@ def deny_access(client_ip, resource_ip, port, proto):
             "-d", resource_ip,
             "-p", proto,
             "-m", "multiport",
-            "--dports", str(port),
+            "--dports", ports_str,   # ✅ "22,8080" instead of "[22, 8080]"
             "-j", "ACCEPT"
         ], check=True)
-        logging.info(f"[OK] Deleted ACCEPT rule for port {port}: {client_ip} -> {resource_ip}")
+        logging.info(f"[OK] Deleted ACCEPT rule for ports {ports_str}: {client_ip} -> {resource_ip}")
     except subprocess.CalledProcessError as e:
-        logging.warning(f"[ERROR] Could not delete ACCEPT {port} rule: {e}")
+        logging.warning(f"[ERROR] Could not delete ACCEPT {ports_str} rule: {e}")
         errors.append(f"ACCEPT rule delete failed: {e}")
 
     if errors:
         return _err("IPTablesError", "; ".join(errors))
-    return _ok({"message": f"Access denied: {client_ip} -> {resource_ip}:{port}"})
+    return _ok({"message": f"Access denied: {client_ip} -> {resource_ip}:{ports_str}"})
 
 def Generate_Wireguard(cmd):
     try:
@@ -433,6 +427,10 @@ def handle_request(cmd):
     ports       = cmd["ports"]
     proto       = cmd.get("protocol")
 
+    # Add this fix
+    if isinstance(ports, list):
+        ports = ",".join(str(p) for p in ports)
+
     if not all([client_ip, resource_ip, ports, proto]):
         return _err("ValidationError", "Missing required fields in request command")
 
@@ -447,69 +445,85 @@ def handle_request(cmd):
     return _err("UnknownAction", f"Unknown action: {action}")
 
 # ===== TLS Server Setup =====
+LISTEN_IP   = "10.0.2.254"                        # SDPGateway-eth0
+LISTEN_PORT = 4433                                 # matches PORT_MTLS
+
+CA_FILE     = "/tmp/CA_workspace/ca.crt"
+SERVER_CERT = "/tmp/SDPGateway_workspace/PEP.crt"
+SERVER_KEY  = "/tmp/SDPGateway_workspace/PEP.key"
+
+
+
 context = ssl.create_default_context(ssl.Purpose.CLIENT_AUTH)
-context.load_cert_chain(certfile="/tmp/PEP_workspace/pep.crt", keyfile="/tmp/PEP_workspace/pep.key")
-context.load_verify_locations(cafile="/tmp/CA_workspace/ca.crt")
+context.minimum_version = ssl.TLSVersion.TLSv1_2
+context.maximum_version = ssl.TLSVersion.TLSv1_3
+context.load_cert_chain(certfile=SERVER_CERT, keyfile=SERVER_KEY)
+context.load_verify_locations(cafile=CA_FILE)
 context.verify_mode = ssl.CERT_REQUIRED
 
+    # Raw socket — bind and listen first
 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-tls_sock = context.wrap_socket(sock, server_side=True)
-tls_sock.bind(("0.0.0.0", 4443))
-tls_sock.listen(5)
-
-logging.info("[*] Gateway server listening on port 4443...")
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+sock.bind((LISTEN_IP, LISTEN_PORT))
+sock.listen(5)
+logging.info("[*] Gateway TLS server listening on %s:%d", LISTEN_IP, LISTEN_PORT)
 
 try:
     while True:
-        conn, addr = tls_sock.accept()
+        conn, addr = sock.accept()
         logging.info(f"[*] Connection from {addr}")
         try:
-            data   = conn.recv(4096)
-            req    = json.loads(data.decode())
+            # ── ADD THIS LINE ──────────────────────
+            tls_conn = context.wrap_socket(conn, server_side=True)
+            # ──────────────────────────────────────
+
+            data   = tls_conn.recv(4096)  # ← read from TLS not raw
+
+            if not data:
+                logging.warning("[!] Empty data from %s", addr)
+                tls_conn.close()
+                continue
+
+            req    = json.loads(data.decode('utf-8'))
             action = req.get("action")
 
             if action == "remove_peer":
                 res = remove_peer(req["public_key"])
-
             elif action == "Generate_keys":
                 res = Generate_Wireguard(req)
-
             elif action == "load_Peer":
                 res = Add_Details(req)
-
             elif action == "Start":
                 res = Start_Wireguard()
-
             elif action == "resync":
                 res = strip_and_resync()
-            
             elif action == "Refresh_Rules":
                 res = apply_firewall()
-
-            elif action == "Request_Access" or action == "Remove_Access":
+            elif action in ("Request_Access", "Remove_Access"):
                 res = handle_request(req)
-
             else:
                 res = _err("UnknownAction", f"Unknown action: {action}")
 
-            _send(conn, res)
+            # ── send response over TLS ──────────────
+            _send(tls_conn, res)
+            # ──────────────────────────────────────
 
             if res["status"] == "success":
                 logging.info(f"[+] Action '{action}' completed successfully")
             else:
                 logging.warning(f"[!] Action '{action}' failed: {res.get('message')}")
 
+        except ssl.SSLError as e:
+            logging.error(f"[!] TLS error from {addr}: {e}")
         except json.JSONDecodeError as e:
-            _send(conn, _err("JSONDecodeError", f"Invalid JSON received: {e}"))
             logging.warning(f"[!] Invalid JSON from {addr}: {e}")
-
+        except UnicodeDecodeError as e:
+            logging.error(f"[!] Bad bytes from {addr}: {e}")
         except Exception as e:
-            _send(conn, _err(type(e).__name__, str(e)))
             logging.exception(f"[!] Unexpected error handling client {addr}")
-
         finally:
             conn.close()
 
 except KeyboardInterrupt:
     logging.info("\n[*] Server shutting down.")
-    tls_sock.close()
+    sock.close()

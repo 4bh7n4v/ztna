@@ -91,7 +91,7 @@ class SPAClient:
     def get_client_ip(self):
         try:
             # This runs a shell command to find the IP on the PDP interface
-            cmd = "ip addr show Intiating-eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1"
+            cmd = "ip addr show Initiating-eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1"
             ip = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
             return ip if ip else "127.0.0.1"
         except Exception:
@@ -125,11 +125,12 @@ class SPAClient:
             config = f"""[Interface]
                 PrivateKey = {wireguard.get_private_key()}
                 Address = {client_ip}/24
+                ListenPort = 51820
 
                 [Peer]
                 PublicKey = {gateway_pubkey}
                 Endpoint = {endpoint}
-                AllowedIPs = {vpn_subnet}, 172.16.0.0/16, 192.168.0.0/16
+                AllowedIPs = {vpn_subnet}, 10.0.1.0/24 , 172.16.0.0/16, 192.168.0.0/16
                 PersistentKeepalive = 25
                 """
             # setting Peer End point is Optional due to all peers are in same netowrk
@@ -244,26 +245,34 @@ class SPAClient:
             self.keepalive_timer.start()
     
     def send_wireguard_key(self, sock):
-        try: 
+        try:
             public_key = wireguard.get_public_key()
-            
-            if self.verbose:
-                logging.info(f"WireGuard public key sent to the server: {public_key}")
+            logging.info(f"WireGuard public key sent to the server: {public_key}")
 
             key_bytes = str(public_key).encode()
             sock.sendto(key_bytes, (self.config['server_ip'], self.config['server_port']))
-            sock.settimeout(15)
+            sock.settimeout(30)
 
             try:
-                response, addr = sock.recvfrom(1024)
+                response, addr = sock.recvfrom(4096)
                 if response:
-                    logging.info(f"Server response to key: {response.decode()}")
-                    self.Create_Conf(json.loads(response.decode()))
-                    self.Create_interface()
-                self.connection = 1
+                    decoded = response.decode()
+                    logging.info(f"Server response to key: {decoded}")
+
+                    # Only process if it's actual gateway details JSON
+                    try:
+                        gateway_details = json.loads(decoded)
+                        if gateway_details.get('status') == 'success':
+                            self.Create_Conf(gateway_details)
+                            self.Create_interface()
+                            self.connection = 1
+                        else:
+                            logging.warning(f"[!] Gateway returned error: {gateway_details}")
+                    except json.JSONDecodeError:
+                        logging.warning(f"[!] Response is not JSON — got: {decoded}")
 
             except socket.timeout:
-                logging.info(f"No response received after sending WireGuard key")
+                logging.info("No response received after sending WireGuard key")
 
         except Exception as e:
             logging.warning(f"[!] Error sending WireGuard key: {e}")
@@ -285,15 +294,21 @@ class SPAClient:
             
             # Only wait for response and send WireGuard key for initial packets, not keepalive
             if not is_keepalive:
-                sock.settimeout(5)
+                sock.settimeout(30)
                 try:
                     response, addr = sock.recvfrom(1024)
-                    
+
                     if response:
-                        logging.info(response.decode())
-                        # Only send WireGuard key for successful initial authentication
+                        decoded = response.decode()
+                        logging.info(decoded)
+    
+                    # Only send WireGuard key if SPA was actually verified
+                    if decoded == 'SPA Verification successful':
                         self.send_wireguard_key(sock)
-                        return True  
+                        return True
+                    else:
+                        logging.warning(f"[!] SPA not verified — response was: {decoded}")
+                        return False
                             
                 except socket.timeout:
                     logging.info("No response received from server")
