@@ -127,3 +127,4 @@ publickey
 wireguard.conf recovery_dump.txt
 sdp_controller/ipam.db
 sdp_controller/Client_History.json
+recovery_dump.txt
