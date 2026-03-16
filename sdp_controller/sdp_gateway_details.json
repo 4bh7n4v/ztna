@@ -2,16 +2,16 @@
   {
     "gateway_id": "gw-01",
     "name": "sdp Gateway 1",
-    "ssh_user": "ajay",
-    "ssh_host": "127.0.0.1",
+    "ssh_user": "zerotrust",
+    "ssh_host": "10.0.0.254",
     "ssh_port": 22,
-    "ssh_key_path": "/home/ajay/ssh_keys/gw-01.key",
-    "wireguard_conf_path": "/mnt/c/Users/koppa/Desktop/projects/ztna/sdp_gateway/wg0.conf",
+    "ssh_key_path": "/home/zerotrust/.ssh/id_ed25519",
+    "wireguard_conf_path": "/home/zerotrust/Desktop/ztna/sdp_gateway/wg0.conf",
     "wireguard_interface": "wg0",
-    "wireguard_public_key": "VLmkZ00wWPjLXwrYWBBdlhqC9pk4JxgdwK3kpYyluhg=",
+    "wireguard_public_key": "TwtGFjCtvLjUB+UOglsQHvigwL8P2+uOL30/nbTU7AQ=",
     "listen_port": 51820,
-    "vpn_subnet": "10.0.0.0/24",
-    "vpn_ip_pool": ["10.0.0.1","10.0.0.2", "10.0.0.3", "10.0.0.4"],
+    "vpn_subnet": "10.0.10.0/24",
+    "gateway_vpn_ip": "10.0.10.1",
     "status": "online"
   },
   {
@@ -25,7 +25,12 @@
     "wireguard_public_key": "wireguard public key",
     "listen_port": 51820,
     "vpn_subnet": "10.1.0.0/24",
-    "vpn_ip_pool": ["10.1.0.2", "10.1.0.3", "10.1.0.4"],
+    "gateway_vpn_ip": "",
+    "vpn_ip_pool": [
+      "10.1.0.2",
+      "10.1.0.3",
+      "10.1.0.4"
+    ],
     "status": "online"
   }
 ]

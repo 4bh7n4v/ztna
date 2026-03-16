@@ -1,0 +1,77 @@
+[
+  {
+    "protocol": "tcp",
+    "port_number": 22,
+    "protocol_type": "ssh"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 80,
+    "protocol_type": "http"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 443,
+    "protocol_type": "https"
+  },
+  {
+    "protocol": "udp",
+    "port_number": 53,
+    "protocol_type": "dns"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 21,
+    "protocol_type": "ftp"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 25,
+    "protocol_type": "smtp"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 143,
+    "protocol_type": "imap"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 993,
+    "protocol_type": "imap-ssl"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 110,
+    "protocol_type": "pop3"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 995,
+    "protocol_type": "pop3-ssl"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 3306,
+    "protocol_type": "mysql"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 5432,
+    "protocol_type": "postgresql"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 3389,
+    "protocol_type": "rdp"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 389,
+    "protocol_type": "ldap"
+  },
+  {
+    "protocol": "tcp",
+    "port_number": 636,
+    "protocol_type": "ldaps"
+  }
+]

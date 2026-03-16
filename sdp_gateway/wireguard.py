@@ -5,5 +5,5 @@ public_key = private_key.public_key()
 
 def get_public_key():
     return public_key
-def get_private_key():
+def get_private():
     return private_key

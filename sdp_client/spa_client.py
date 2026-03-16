@@ -15,13 +15,24 @@ import base64
 import threading
 import argparse
 import wireguard
+import subprocess
+import logging
 
+
+WG_INTERFACE = "wg0"
+THRESHOLD = 600  # seconds (10 min)
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 class SPAClient:
     def __init__(self, config_file='client_config.json', verbose=False, access_port=None, 
-             server_port=62201, protocol='tcp', source_ip=None, keepalive_interval=240):
+             server_port=62201, protocol='tcp', source_ip=None, keepalive_interval=240,interface="wg0"):
         # Initialize verbose first so it can be used in load_config
         self.verbose = verbose
+        self.connection = 0
         
         # Load configuration
         self.load_config(config_file)
@@ -46,32 +57,120 @@ class SPAClient:
         self.setup_crypto(self.password)
         self.keepalive_timer = None
 
-    def get_client_ip(self): 
-        """
-        this only gets the private ip and will only work if the client is inside the home 
-        network for prod servers please pass the ip in config file or as a command line argument
-        """
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
+        self.interface = interface
+        self.monitor_script = "/home/zerotrust/Desktop/ztna/sdp_client/wg_stale_monitor.py"
+        self.stale_timeout = 300
+
+    def dns(self,query):
+        try:
+            ip = socket.gethostbyname(query)
+            return ip
+        except socket.gaierror:
+            return None
+
+    def Update_DNS(self,config_file, save=False):
+        """Load JSON, update server_ip using DNS, return updated config.
+       If save=True -> write back to file."""
+    
+        with open(config_file) as f:
+            cfg = json.load(f)
+        
+        # Update ONLY server_ip
+        resolved_ip = self.dns(cfg["server_ip"])
+        if resolved_ip:
+            cfg["server_ip"] = resolved_ip
+
+        # Save only if asked
+        if save:
+            with open(config_file, "w") as f:
+                json.dump(cfg, f, indent=4)
+
+        return cfg
+
+
+    def get_client_ip(self):
+        try:
+            # This runs a shell command to find the IP on the PDP interface
+            cmd = "ip addr show Initiating-eth0 | grep 'inet ' | awk '{print $2}' | cut -d/ -f1"
+            ip = subprocess.check_output(cmd, shell=True).decode('utf-8').strip()
+            return ip if ip else "127.0.0.1"
+        except Exception:
+            return "127.0.0.1"
 
     def load_config(self, config_file):
         try:
             with open(config_file, 'r') as f:
-                self.config = json.load(f)
+                # self.config = json.load(f)
+                self.config = self.Update_DNS(config_file)
             if not self.config.get("source_ip"):
                 self.config['source_ip'] = self.get_client_ip() # get client ip using sockets
             self.password = self.config['encryption_key'] # get the encryptionkey from config file
         except FileNotFoundError:
-            print(f"Error: Configuration file {config_file} not found")
+            logging.warning(f"Error: Configuration file {config_file} not found")
             sys.exit(1)
         except json.JSONDecodeError:
-            print(f"Error: Invalid JSON in configuration file {config_file}")
+            logging.warning(f"Error: Invalid JSON in configuration file {config_file}")
             sys.exit(1)
         if self.verbose:
-                print(f"Detected source IP: {self.config['source_ip']}")
+                logging.info(f"Detected source IP: {self.config['source_ip']}")
+
+    def Create_Conf(self,response):
+        try:
+            client_ip = response["client_vpn_ip"]
+            gateway_pubkey = response["gateway_public_key"]
+            endpoint = response["gateway_endpoint"]
+            resource_ip = response["gateway_vpn_ip"]
+            vpn_subnet = response["vpn_subnet"]
+
+            config = f"""[Interface]
+                PrivateKey = {wireguard.get_private_key()}
+                Address = {client_ip}/24
+                ListenPort = 51820
+
+                [Peer]
+                PublicKey = {gateway_pubkey}
+                Endpoint = {endpoint}
+                AllowedIPs = {vpn_subnet}, 10.0.1.0/24 , 172.16.0.0/16, 192.168.0.0/16
+                PersistentKeepalive = 25
+                """
+            # setting Peer End point is Optional due to all peers are in same netowrk
+
+            output_path = "/tmp/CA_workspace/wg0.conf"
+            with open(output_path, "w") as f:
+                f.write(config)
+
+            logging.info(f"[+] WireGuard config created at: {output_path}")
+
+        except KeyError as e:
+            logging.warning(f"[!] Missing key in response: {e}")
+        except Exception as ex:
+            logging.warning(f"[!] Error creating WireGuard config: {ex}")
+        
+
+    def Create_interface(self):
+        wg_interface = "CA_workspace/wg0"  # Your WireGuard interface name
+
+        try:
+            logging.info(f"[+] Starting WireGuard interface...")
+            try:
+                subprocess.run(
+                    ["sudo", "wg-quick", "up", f"/tmp/{wg_interface}.conf"],
+                    check=True,
+                    capture_output=True,
+                    text=True
+                )
+            except subprocess.CalledProcessError as e:
+                logging.warning("[!] WireGuard command failed:")
+                logging.warning(f"STDOUT:\n{e.stdout}")
+                logging.warning(f"STDERR:\n{e.stderr}")
+
+            logging.info(f"[+] WireGuard interface is up. Press Ctrl+C to stop.")
+
+            # Simulate running service (you can replace this with your actual logic)
+
+        except subprocess.CalledProcessError as e:
+            logging.warning(f"[!] WireGuard command failed: {e}")
+
 
     def setup_crypto(self, password):
         kdf = PBKDF2HMAC(
@@ -97,7 +196,7 @@ class SPAClient:
             'resource_ip':self.config['resource_ip']
         }      
         if self.verbose:
-            print("\nPacket data:")
+            logging.info(f"\nPacket data:")
             pprint.pprint(packet_data)
 
         json_data = json.dumps(packet_data).encode()
@@ -105,8 +204,8 @@ class SPAClient:
         hmac_digest = h.digest()
         
         if self.verbose:
-            print(f"\nHMAC digest (hex):")
-            print(hmac_digest.hex())
+            logging.info(f"\nHMAC digest (hex):")
+            logging.info(hmac_digest.hex())
         
         # Combine data and HMAC
         final_data = json_data + hmac_digest
@@ -125,8 +224,8 @@ class SPAClient:
         final_packet = iv + encrypted # the first 16 bits is the iv which will be extracted on server side
         
         if self.verbose:
-            print(f"\nEncrypted data (base64):")
-            print(base64.b64encode(final_packet).decode())
+            logging.info(f"\nEncrypted data (base64):")
+            logging.info(base64.b64encode(final_packet).decode())
         
         return final_packet
 
@@ -134,9 +233,9 @@ class SPAClient:
         try:
             self.send_packet(is_keepalive=True)
             if self.verbose:
-                print(f"Keepalive packet sent to {self.config['server_ip']}:{self.config['server_port']}")
+                logging.info(f"Keepalive packet sent to {self.config['server_ip']}:{self.config['server_port']}")
         except Exception as e:
-            print(f"Error sending keepalive packet: {str(e)}")
+            logging.warning(f"[!] Error sending keepalive packet: {str(e)}")
         finally:
             # Schedule next keepalive
             self.keepalive_timer = threading.Timer(
@@ -146,62 +245,79 @@ class SPAClient:
             self.keepalive_timer.start()
     
     def send_wireguard_key(self, sock):
-        try: 
+        try:
             public_key = wireguard.get_public_key()
-            
-            if self.verbose:
-                print(f"WireGuard public key sent to the server: {public_key}")
+            logging.info(f"WireGuard public key sent to the server: {public_key}")
 
             key_bytes = str(public_key).encode()
             sock.sendto(key_bytes, (self.config['server_ip'], self.config['server_port']))
-            sock.settimeout(5)
+            sock.settimeout(30)
 
             try:
-                response, addr = sock.recvfrom(1024)
+                response, addr = sock.recvfrom(4096)
                 if response:
-                    print("Server response to key:", response.decode())
+                    decoded = response.decode()
+                    logging.info(f"Server response to key: {decoded}")
+
+                    # Only process if it's actual gateway details JSON
+                    try:
+                        gateway_details = json.loads(decoded)
+                        if gateway_details.get('status') == 'success':
+                            self.Create_Conf(gateway_details)
+                            self.Create_interface()
+                            self.connection = 1
+                        else:
+                            logging.warning(f"[!] Gateway returned error: {gateway_details}")
+                    except json.JSONDecodeError:
+                        logging.warning(f"[!] Response is not JSON — got: {decoded}")
 
             except socket.timeout:
-                print("No response received after sending WireGuard key")
+                logging.info("No response received after sending WireGuard key")
 
         except Exception as e:
-            print(f"Error sending WireGuard key: {e}")
+            logging.warning(f"[!] Error sending WireGuard key: {e}")
 
     def send_packet(self, is_keepalive=False):
         try:
             sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) # Open a UDP socket
-            packet = self.create_packet() # Create the packet
+            packet = self.create_packet() 
 
             sock.sendto(packet, (self.config['server_ip'], self.config['server_port']))
 
             if not is_keepalive:
-                print(f"SPA packet sent to {self.config['server_ip']}:{self.config['server_port']}")
+                logging.info(f"SPA packet sent to {self.config['server_ip']}:{self.config['server_port']}")
             else:
-                print(f"sent a Keepalive packet")
+                logging.info(f"sent a Keepalive packet")
 
             if self.verbose and not is_keepalive:
-                print(f"Requesting access to port: {self.config['access_port']}")
+                logging.info(f"Requesting access to port: {self.config['access_port']}")
             
             # Only wait for response and send WireGuard key for initial packets, not keepalive
             if not is_keepalive:
-                sock.settimeout(5)
+                sock.settimeout(30)
                 try:
                     response, addr = sock.recvfrom(1024)
-                    
+
                     if response:
-                        print(response.decode())
-                        # Only send WireGuard key for successful initial authentication
+                        decoded = response.decode()
+                        logging.info(decoded)
+    
+                    # Only send WireGuard key if SPA was actually verified
+                    if decoded == 'SPA Verification successful':
                         self.send_wireguard_key(sock)
-                        return True  # Success
+                        return True
+                    else:
+                        logging.warning(f"[!] SPA not verified — response was: {decoded}")
+                        return False
                             
                 except socket.timeout:
-                    print("No response received from server")
-                    return False  # Failed
+                    logging.info("No response received from server")
+                    return False  
             
             return True  # For keepalive packets, assume success
 
         except Exception as e:
-            print(f"Error sending packet: {str(e)}")
+            logging.warning(f"[!] Error sending packet: {str(e)}")
             return False  # Failed
         finally:
             sock.close()
@@ -213,15 +329,101 @@ class SPAClient:
             self.send_keepalive
         )
         self.keepalive_timer.start()
-        if self.verbose:
-            print(f"Keepalive mechanism started (interval: {self.keepalive_interval} seconds)")
-        else:
-            print("Keepalive mechanism started")
+        if self.verbose and self.connection:
+            logging.info(f"Keepalive mechanism started (interval: {self.keepalive_interval} seconds)")
+        elif self.connection:
+            logging.info(f"Keepalive mechanism started")
+        else :
+            logging.info(f"No Wiregaurd key Recieved in Interval")
 
     def stop_keepalive(self):
         if self.keepalive_timer:
             self.keepalive_timer.cancel()
-            print("Keepalive mechanism stopped")
+            logging.info(f"Keepalive mechanism stopped")
+
+        # -----------------------------
+    # WireGuard Handshake Monitoring
+    # -----------------------------
+    def monitor_handshake(self):
+        """
+        Background monitor that checks the latest WireGuard handshake every minute.
+        If no handshake for > THRESHOLD seconds, the tunnel is removed.
+        """
+        logging.info(f"[+] Handshake monitor started for {WG_INTERFACE} (threshold: {THRESHOLD}s)")
+        
+        while True:
+            try:
+                # Check if interface exists
+                result = subprocess.run(
+                    ["sudo", "wg", "show", WG_INTERFACE, "dump"],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True
+                )
+
+                if result.returncode != 0:
+                    logging.warning(f"[!] WireGuard not active: {result.stderr.strip()}")
+                    time.sleep(60)
+                    continue
+
+                lines = result.stdout.strip().splitlines()
+                if len(lines) < 2:
+                    logging.warning("[!] No active peers on interface.")
+                    time.sleep(60)
+                    continue
+
+                # Extract latest handshake timestamp
+                peer_info = lines[1].split("\t")
+                latest = int(peer_info[4]) if peer_info[4].isdigit() else 0
+                now = int(time.time())
+                age = now - latest if latest else -1
+
+                logging.info(f"[monitor] Handshake age: {age}s")
+
+                if latest == 0 or age > THRESHOLD:
+                    logging.warning(f"[!] No handshake for >{THRESHOLD}s — cleaning up interface...")
+                    pubkey = peer_info[0]
+                    subprocess.run(
+                        ["sudo", "wg", "set", WG_INTERFACE, "peer", pubkey, "remove"],
+                        stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                    )
+                    logging.warning(f"[!] Peer {pubkey} removed due to inactivity.")
+                    break
+
+            except Exception as e:
+                logging.warning(f"[!] Handshake monitor error: {e}")
+
+            time.sleep(60)  # check every minute
+
+
+    def start_monitor_process(self):
+        """
+        Launches the stale-handshake monitor as a detached process.
+        Survives SPA client termination.
+        """
+        logging.info("[+] Launching detached monitor process...")
+
+        cmd = [
+            sys.executable,
+            self.monitor_script,
+            self.interface,
+            str(self.stale_timeout)
+        ]
+
+        # Pass verbose flag to monitor if enabled
+        if self.verbose:
+            cmd.append("-v")
+
+        subprocess.Popen(
+            ["nohup"] + cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            preexec_fn=os.setsid
+        )
+
+        logging.info("[+] Monitor process started successfully (independent).")
+
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='SPA Client - Sends Single Packet Authorization',
@@ -265,6 +467,7 @@ def main():
     
     # Send initial packet and check if successful
     if client.send_packet():
+        client.start_monitor_process()
         client.start_keepalive()  # Only start keepalive if initial packet was successful
         try:
             # Keep the script running
@@ -272,9 +475,9 @@ def main():
                 time.sleep(1)
         except KeyboardInterrupt:
             client.stop_keepalive()
-            print("\nClient shutting down")
+            logging.info(f"\nClient shutting down")
     else:
-        print("Failed to connect to server. Exiting.")
+        logging.info("Failed to connect to server. Exiting.")
         sys.exit(1)
 
 if __name__ == "__main__":

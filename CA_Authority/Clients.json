@@ -1,0 +1,16 @@
+[
+  {
+    "name": "seed",
+    "ip": "192.168.43.130",
+    "user": "seed",
+    "role": "gateway",
+    "remote_dir": "/home/{user}/ztna/sdp_{role}/OpenSSL"
+  },
+  {
+    "name": "uneedituh",
+    "ip": "192.168.43.128",
+    "user": "uneedituh",
+    "role": "controller",
+    "remote_dir": "/home/{user}/ztna/sdp_{role}/OpenSSL"
+  }
+]
