@@ -181,6 +181,7 @@ def remove_peer(pub_key):
     except Exception as e:
         logging.exception("[!] Unexpected error removing peer")
         return _err(type(e).__name__, str(e))
+        
 def allow_access(client_ip, resource_ip, ports, proto):
     errors = []
 

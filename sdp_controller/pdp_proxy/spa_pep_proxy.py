@@ -369,28 +369,23 @@ class PEPProxy:
 
     # Add this to spa_pep_proxy.py
     def _forward_to_ryu(self):
-        """
-        Listen on management interface for SDN commands from SDP Controller
-        Forward them to Ryu via S1 (src=10.0.0.10, dst=7777)
-        """
         mgmt_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        mgmt_sock.bind(('10.0.3.10', 7777))
-        logging.info('[Relay] Listening for SDN commands on 10.0.3.10:7777')
+        mgmt_sock.bind((self.mgmt_ip, 7777))        # ← use self.mgmt_ip
+        logging.info(f'[SDN] Listening for SDN commands on {self.mgmt_ip}:7777')
 
         while self._running:
             try:
                 data, addr = mgmt_sock.recvfrom(4096)
-                logging.debug('[Relay] SDN command from Controller: %s', data)
+                logging.debug(f'[SDN] Command from Controller ({addr}): {data}')
 
-                # Forward to Ryu via S1 using FrontProxy eth0
                 ryu_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                ryu_sock.bind(('10.0.0.10', 0))   # bind to S1-facing interface
-                ryu_sock.sendto(data, ('10.0.0.1', 7777))  # Ryu sees src=10.0.0.10
+                ryu_sock.bind((self.listen_addr[0], 0))  # ← use listen_host (S1 interface)
+                ryu_sock.sendto(data, ('10.0.0.1', 7777))
                 ryu_sock.close()
-                logging.info('[Relay] SDN command forwarded to Ryu via S1')
+                logging.info('[SDN] Command forwarded to Ryu via S1')
 
             except Exception as e:
-                logging.error('[Relay] SDN forward error: %s', e)
+                logging.error(f'[SDN] Forward error: {e}')
 
         mgmt_sock.close()
 

@@ -21,7 +21,8 @@ EXPECTED_SCHEMAS = {
     },
     "vpn_leases": {
         "lease_id", "device_id", "gateway_id", "vpn_ip",
-        "status", "lease_start", "last_seen", "lease_expiry"
+        "status", "lease_start", "last_seen", "lease_expiry",
+        "revoked_at", "revoke_reason"  
     },
     "audit_logs": {
         "log_id", "event_type", "device_id",
@@ -92,14 +93,16 @@ def create_devices(cursor):
 def create_vpn_leases(cursor):
     cursor.execute("""
         CREATE TABLE vpn_leases (
-            lease_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            device_id TEXT NOT NULL,
-            gateway_id TEXT NOT NULL,
-            vpn_ip TEXT NOT NULL,
-            status TEXT DEFAULT 'active',
-            lease_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_seen TIMESTAMP,
-            lease_expiry TIMESTAMP,
+            lease_id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            device_id     TEXT NOT NULL,
+            gateway_id    TEXT NOT NULL,
+            vpn_ip        TEXT NOT NULL,
+            status        TEXT DEFAULT 'active',
+            lease_start   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_seen     TIMESTAMP,
+            lease_expiry  TIMESTAMP,
+            revoked_at    REAL,        -- ← add this
+            revoke_reason TEXT,        -- ← add this
 
             UNIQUE(vpn_ip),
             UNIQUE(device_id),
