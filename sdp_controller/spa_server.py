@@ -679,10 +679,10 @@ class SPAServer:
                 logging.info(f"WG key from client {packet_data['source_ip']} via proxy {addr[0]}: {key}")
                 gateway['gateway_vpn_ip']=gw_vpn_ip
                 
-                # # Add peer to WireGuard
-                # if not self.connection:
-                #     data = json.loads(Gateway_SSL.Generate_Wireguard(gw_vpn_ip,gateway['listen_port']))
-                #     Gateway_SSL.Start_Wireguard("Start")
+                # Add peer to WireGuard
+                if not self.connection:
+                    response  = json.loads(Gateway_SSL.Generate_Wireguard(gw_vpn_ip,gateway['listen_port']))
+                    Gateway_SSL.Start_Wireguard("Start")
                     
 
                 add_wg_peer.add_peer(self,vpn_ip,key,gateway)
@@ -721,7 +721,7 @@ class SPAServer:
 
                 Gateway_SSL.Request_Permission("Request_Access",vpn_ip,add_wg_peer.Resource_Resolver(resource_id),access_port,packet_data["protocol"])
 
-                gateway['wireguard_public_key'] = data.get("public_key")
+                gateway['wireguard_public_key'] = response .get("public_key")
                 add_wg_peer.update_gateway(resource_id,gateways,gateway)
                 # Prepare gateway details to send to client
                 request_key = f"{packet_data.get('source_ip')}:{packet_data.get('access_port')}:{packet_data.get('protocol')}"
