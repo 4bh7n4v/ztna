@@ -8,7 +8,7 @@
     "ssh_key_path": "/home/zerotrust/.ssh/id_ed25519",
     "wireguard_conf_path": "/home/zerotrust/Desktop/ztna/sdp_gateway/wg0.conf",
     "wireguard_interface": "wg0",
-    "wireguard_public_key": "TwtGFjCtvLjUB+UOglsQHvigwL8P2+uOL30/nbTU7AQ=",
+    "wireguard_public_key": "SarGlqdErPQRo+2rPCidWWWarEt+k7f+Vu/JWef7RU8=",
     "listen_port": 51820,
     "vpn_subnet": "10.0.10.0/24",
     "gateway_vpn_ip": "10.0.10.1",

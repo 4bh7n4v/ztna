@@ -257,6 +257,13 @@ class SPAServer:
         used_ips = set(row[0] for row in cursor.execute(
             "SELECT vpn_ip FROM vpn_leases WHERE status='active'"
         ))
+        
+        cursor.execute("""
+            DELETE FROM vpn_leases
+            WHERE status='revoked'
+            AND device_id = ?
+        """, (device_id,))
+        conn.commit()
 
         # 3️⃣ Define subnet
         net = ipaddress.ip_network(vpn_subnet)
@@ -340,7 +347,9 @@ class SPAServer:
 
                 # Remove WireGuard peer
                 try:
+
                     Gateway_SSL.send_remove_peer(device_id)
+
                     logging.info(f"[IPAM] Peer {device_id} removed from gateway")
                 except Exception as e:
                     logging.warning(f"[IPAM] Peer {device_id} already removed or not found: {e}")
@@ -384,6 +393,7 @@ class SPAServer:
 
         try:
             Gateway_SSL.send_remove_peer(device_id)
+
         except:
             pass
 
@@ -487,7 +497,7 @@ class SPAServer:
 
 
             if self.verbose:
-                logging.info(f"\nReceived packet from {addr[0]}:{addr[1]}")
+                logging.info(f" Received packet from {addr[0]}:{addr[1]}")
                 logging.info(f"Raw data (base64): {base64.b64encode(data).decode()}")
             
             # Decrypt the packet
@@ -507,7 +517,7 @@ class SPAServer:
             packet_data = json.loads(decrypted)
             
             if self.verbose:
-                logging.info("\nPacket contents:")
+                logging.info(" Packet contents:")
                 logging.info(pprint.pformat(packet_data))
             
             # Check if source IP is allowed
@@ -681,11 +691,18 @@ class SPAServer:
                 
                 # Add peer to WireGuard
                 if not self.connection:
-                    response  = json.loads(Gateway_SSL.Generate_Wireguard(gw_vpn_ip,gateway['listen_port']))
+                    response = json.loads(Gateway_SSL.Generate_Wireguard(gw_vpn_ip, gateway['listen_port']))
                     Gateway_SSL.Start_Wireguard("Start")
-                    
+                    self.connection = True
+                    gateway['wireguard_public_key'] = response.get("public_key")  # ← set here
+                    add_wg_peer.update_gateway(resource_id, gateways, gateway)
+                    logging.info(f"[WG] First client — WireGuard started, pubkey: {gateway['wireguard_public_key']}")
+                else:
+                    # Reuse existing — re-read public key from gateway config
+                    gateway['wireguard_public_key'] = gateway.get("wireguard_public_key")  # ✅ correct
+                    logging.info(f"[WG] Reusing existing WireGuard interface, pubkey: {gateway['wireguard_public_key']}")
 
-                add_wg_peer.add_peer(self,vpn_ip,key,gateway)
+                add_wg_peer.add_peer(self, vpn_ip, key, gateway)
                 packet = {
                     "action": "Request_Access",
                     "source_ip": vpn_ip,
@@ -719,11 +736,8 @@ class SPAServer:
                     logging.error(f"[SDN] Failed to send UDP 7777: {e}")
                 # -------------------------------------------------------------
 
-                Gateway_SSL.Request_Permission("Request_Access",vpn_ip,add_wg_peer.Resource_Resolver(resource_id),access_port,packet_data["protocol"])
+                Gateway_SSL.Request_Permission("Request_Access",vpn_ip,add_wg_peer.Resource_Resolver(resource_id),access_port,packet_data["protocol"]) 
 
-                gateway['wireguard_public_key'] = response .get("public_key")
-                add_wg_peer.update_gateway(resource_id,gateways,gateway)
-                # Prepare gateway details to send to client
                 request_key = f"{packet_data.get('source_ip')}:{packet_data.get('access_port')}:{packet_data.get('protocol')}"
                 with self._lock:    
                     self.spa_requests[request_key] = {
@@ -854,17 +868,14 @@ class SPAServer:
 
                         logging.warning(f"Peer '{key}' has timed out. Cleaning up...")
 
-                        # Remove WireGuard peer from gateway
                         if peer_pubkey:
                             try:
                                 response = Gateway_SSL.send_remove_peer(peer_pubkey)
                                 logging.info(f"Gateway response for '{key}': {response.strip()}")
                             except Exception as e:
                                 logging.error(f"Failed to contact gateway for '{key}': {e}")
-                        else:
-                            logging.warning(f"No public key found for peer '{key}' — skipping removal.")
 
-                        # Revoke firewall access
+                        # Revoke firewall access  ← ONLY record_remove here (full remove operation)
                         try:
                             Gateway_SSL.Request_Permission(
                                 "Remove_Access",
@@ -939,7 +950,7 @@ class SPAServer:
                 # Reset connection flag if no active peers left
                 with self._lock:
                     if not self.spa_requests:
-                        self.connection = False
+#Check Point            # self.connection = False
                         logging.info("All peers cleaned up — connection flag reset to False.")
 
                 # Resync gateway
@@ -950,6 +961,15 @@ class SPAServer:
                 except Exception as e:
                     logging.error(f"Failed to trigger Gateway resync: {e}")
 
+    def cleanup(self):
+        timing.save_csv("timing_data.csv")
+        timing.generate_report(output_dir="./reports")   # ← ADD THESE 2 LINES
+        if self.socket:
+            try:
+                self.socket.close()
+            except:
+                pass
+        logging.info("Server shutdown complete")
             
     def start(self):    
         try:
@@ -972,7 +992,6 @@ class SPAServer:
             db_cleanup.start() 
 
             Gateway_SSL.Refresh_Gateway_Firewall() 
-            # verification_thread.start()
             while self.running:
                 try:
                     data, addr = self.socket.recvfrom(4096)
@@ -993,23 +1012,24 @@ class SPAServer:
             self.cleanup()
 
     def signal_handler(self, signum, frame):
-        if not self.running:  # Prevent multiple shutdown attempts
+        if not self.running:
             return
         logging.info(f"Received signal {signum}, shutting down...")
         self.running = False
+        
+        # Generate timing report before exit
+        try:
+            timing.save_csv("timing_data.csv")
+            paths = timing.generate_report("./reports")
+            logging.info(f"[Timing] Reports saved to ./reports/")
+        except Exception as e:
+            logging.error(f"[Timing] Report generation failed: {e}")
+        
         if self.socket:
             try:
                 self.socket.close()
             except:
                 pass
-
-    def cleanup(self):
-        if self.socket:
-            try:
-                self.socket.close()
-            except:
-                pass
-        logging.info("Server shutdown complete")
 
 def main():
     parser = argparse.ArgumentParser(
