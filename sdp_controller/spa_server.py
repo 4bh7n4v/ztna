@@ -962,8 +962,6 @@ class SPAServer:
                     logging.error(f"Failed to trigger Gateway resync: {e}")
 
     def cleanup(self):
-        timing.save_csv("timing_data.csv")
-        timing.generate_report(output_dir="./reports")   # ← ADD THESE 2 LINES
         if self.socket:
             try:
                 self.socket.close()
@@ -1016,14 +1014,6 @@ class SPAServer:
             return
         logging.info(f"Received signal {signum}, shutting down...")
         self.running = False
-        
-        # Generate timing report before exit
-        try:
-            timing.save_csv("timing_data.csv")
-            paths = timing.generate_report("./reports")
-            logging.info(f"[Timing] Reports saved to ./reports/")
-        except Exception as e:
-            logging.error(f"[Timing] Report generation failed: {e}")
         
         if self.socket:
             try:
